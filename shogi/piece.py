@@ -84,15 +84,6 @@ SLIDER_DIRS = {
     'L': [(0, -1)],
 }
 
-# 駒の日本語名
-JAPANESE_PIECE_NAMES = {
-    'K': '玉', 'R': '飛', 'B': '角', 'G': '金', 'S': '銀', 'N': '桂', 'L': '香', 'P': '歩',
-    'R+': '龍', 'B+': '馬', 'S+': '成銀', 'N+': '成桂', 'L+': '成香', 'P+': 'と',
-}
-
-# 日本語名から駒種への逆マップ
-KIND_FROM_JP = {v: k for k, v in JAPANESE_PIECE_NAMES.items()}
-
 # 駒の価値
 PIECE_VALUES: Dict[str, int] = {
     'K': 10000, 'R': 500, 'B': 500, 'G': 300, 'S': 300, 'N': 200, 'L': 200, 'P': 100,
