@@ -804,21 +804,97 @@ def ask_continue_screen(screen):
         pygame.display.flip(); clock.tick(FPS)
 
 def evaluate_board(state, owner):
-    score = 0
+    # --- 基本駒価値 + 位置評価 + モビリティ + 王安全性 ---
+    # 簡易 piece-square テーブル (先手基準: owner=0 視点。後手は反転)
+    # 盤は 9x9 (x:0-8, y:0-8)。前進方向: owner=0 は y 減少, owner=1 は y 増加。
+    PST_PAWN = [0,1,2,3,3,2,1,0,0]
+    PST_SILVER = [0,1,2,2,2,2,1,0,0]
+    PST_GOLD = [0,1,2,3,3,2,1,0,0]
+    PST_LANCE = [0,1,2,3,4,3,2,1,0]
+    PST_KNIGHT = [0,0,1,2,3,2,1,0,0]
+    PST_BISHOP = [0,1,1,2,2,2,1,1,0]
+    PST_ROOK = [0,0,1,2,2,2,1,0,0]
+    PST_KING_MID = [2,3,2,1,0,1,2,3,2]
+
+    def pst_bonus(kind, y_local):
+        table = None
+        if kind == 'P': table = PST_PAWN
+        elif kind == 'S': table = PST_SILVER
+        elif kind in ('G','+P','+S','+L','+N'): table = PST_GOLD
+        elif kind == 'L': table = PST_LANCE
+        elif kind == 'N': table = PST_KNIGHT
+        elif kind in ('B','+B'): table = PST_BISHOP
+        elif kind in ('R','+R'): table = PST_ROOK
+        elif kind == 'K': table = PST_KING_MID
+        if table:
+            return table[min(max(y_local,0),8)]
+        return 0
+
+    material = 0
+    positional = 0
+    mobility = 0
+    king_safety = 0
+    king_pos = {0: None, 1: None}
+
+    # 素朴な効き数用: 各自の合法手数を最後に再利用
+    # ただしフル生成はコストなので局面全体で1回ずつ
+    # ここでは後で move count を取得するため state.turn を利用しない簡易計測
+    # (完全性より軽量性優先)
+    # 駒走査
     for y in range(BOARD_SIZE):
         for x in range(BOARD_SIZE):
             piece = state.board[x][y]
-            if piece:
-                value = PIECE_VALUES.get(piece.kind, 0)
-                if piece.owner == owner:
-                    if y in PROMOTION_ZONE[owner]: value += 10
-                    score += value
-                else:
-                    if y in PROMOTION_ZONE[1-owner]: value += 10
-                    score -= value
-    for p_kind in state.hands[owner]: score += PIECE_VALUES.get(p_kind, 0)
-    for p_kind in state.hands[1-owner]: score -= PIECE_VALUES.get(p_kind, 0)
-    return score
+            if not piece: continue
+            val = PIECE_VALUES.get(piece.kind, 0)
+            if piece.kind == 'K':
+                king_pos[piece.owner] = (x, y)
+            # 昇級域ボーナス (前進圧力)
+            if y in PROMOTION_ZONE[piece.owner]:
+                val += 10
+            # 位置ボーナス (視点統一: owner=0 から見て上方向が善)
+            y_for_owner0 = y if piece.owner == 0 else 8 - y
+            pos = pst_bonus(piece.kind, y_for_owner0)
+            if piece.owner == owner:
+                material += val
+                positional += pos
+            else:
+                material -= val
+                positional -= pos
+
+    # 手駒 (位置ボーナス無し、単純加算)
+    for p_kind in state.hands[owner]:
+        material += PIECE_VALUES.get(p_kind, 0)
+    for p_kind in state.hands[1-owner]:
+        material -= PIECE_VALUES.get(p_kind, 0)
+
+    # モビリティ: 現在手番/非手番双方の合法手数差 (軽量化のため一度ずつ生成)
+    current_turn = state.turn
+    own_moves = get_legal_moves_all(state, owner)
+    opp_moves = get_legal_moves_all(state, 1-owner)
+    mobility = (len(own_moves) - len(opp_moves)) * 0.5
+    # 元の手番を復帰 (get_legal_moves_all が内部で turn を書き換えない前提)
+    state.turn = current_turn
+
+    # 王安全性: 周囲 8 マスの味方駒数差分 (敵駒減点)
+    def king_zone_score(pos, owner_):
+        if not pos: return 0
+        kx, ky = pos
+        s = 0
+        for dx in (-1,0,1):
+            for dy in (-1,0,1):
+                if dx==0 and dy==0: continue
+                nx, ny = kx+dx, ky+dy
+                if 0 <= nx < BOARD_SIZE and 0 <= ny < BOARD_SIZE:
+                    pc = state.board[nx][ny]
+                    if pc:
+                        if pc.owner == owner_:
+                            s += 0.8
+                        else:
+                            s -= 0.9
+        return s
+    king_safety = king_zone_score(king_pos[owner], owner) - king_zone_score(king_pos[1-owner], 1-owner)
+
+    return material + positional + mobility + king_safety
 
 def get_cpu_move_beginner(state):
     legal_moves = get_legal_moves_all(state, state.turn)
@@ -1103,14 +1179,31 @@ def _tt_store(zob, depth, value, flag, best_move, alpha, beta):
                 break
     TT[zob] = TTEntry(zob, depth, value, flag, best_move, alpha, beta)
 
-def _search_child(state, move, depth, alpha, beta, maximizing, owner, ply, ctx):
-    """1 手指して子ノードを評価。探索打ち切り時は (score, timeout_flag) を返す"""
+class SearchParams:
+    """探索ループで共有する可変パラメータ束。
+    引数数削減と alpha/beta 更新の一元化。
+    """
+    __slots__ = ('depth','alpha','beta','maximizing','owner','ply','ctx','original_alpha','original_beta')
+    def __init__(self, depth, alpha, beta, maximizing, owner, ply, ctx):
+        self.depth = depth
+        self.alpha = alpha
+        self.beta = beta
+        self.maximizing = maximizing
+        self.owner = owner
+        self.ply = ply
+        self.ctx = ctx
+        self.original_alpha = alpha
+        self.original_beta = beta
+
+def _search_child(state, move, params: 'SearchParams'):
+    """1手指して子ノードを評価。探索打ち切り時は (score, timeout_flag) を返す"""
     undo = apply_move_fast(state, move)
     recompute_zobrist(state)
-    child_val, _ = alpha_beta_search(state, depth-1, alpha, beta, not maximizing, owner, ply+1, ctx)
+    child_val, _ = alpha_beta_search(state, params.depth-1, params.alpha, params.beta,
+                                     not params.maximizing, params.owner, params.ply+1, params.ctx)
     undo_move_fast(state, move, undo)
     recompute_zobrist(state)
-    if ctx.timeout:
+    if params.ctx.timeout:
         return child_val, True
     return child_val, False
 
@@ -1127,57 +1220,67 @@ def _final_flag(value, original_alpha, original_beta):
         return 'LOWER'
     return 'EXACT'
 
-def _search_loop(state, ordered, depth, alpha, beta, maximizing, owner, ply, ctx, original_alpha, original_beta):
-    """最大化/最小化共通ループ。戻り: (value, best_move, flag, alpha, beta)"""
-    first_move = ordered[0]
-    best_move = first_move
-    value = -INF if maximizing else INF
-    for move in ordered:
-        child_val, timed_out = _search_child(state, move, depth, alpha, beta, maximizing, owner, ply, ctx)
-        if timed_out:
-            # 既存 value が初期値なら評価で埋める
-            if (maximizing and value == -INF) or ((not maximizing) and value == INF):
-                value = evaluate_board(state, owner)
-            return value, best_move, 'EXACT', alpha, beta
-        improved = (child_val > value) if maximizing else (child_val < value)
-        if improved:
-            value = child_val
-            best_move = move
-        if maximizing:
-            alpha = max(alpha, value)
-        else:
-            beta = min(beta, value)
-        if alpha >= beta:
-            _record_cut_or_history(first_move, move, maximizing, owner, depth, ply)
-            break
-    flag = _final_flag(value, original_alpha, original_beta)
-    return value, best_move, flag, alpha, beta
-
-def alpha_beta_search(state, depth, alpha, beta, maximizing_player, owner, ply, ctx):
-    # 時間/端末判定
+def _timeout_or_leaf(state, depth, alpha, beta, owner, ply, ctx):
+    """時間切れ/葉ノード判定をまとめる。戻り:(done, (value, move))"""
     if ctx.time_limit and (time.time() - ctx.start_time) > ctx.time_limit:
         ctx.timeout = True
-        return evaluate_board(state, owner), None
+        return True, (evaluate_board(state, owner), None)
     ctx.nodes += 1
     if depth == 0 or state.game_over:
-        return quiescence_search(state, alpha, beta, owner, ctx, ply)
+        return True, quiescence_search(state, alpha, beta, owner, ctx, ply)
+    return False, (0, None)
 
+def _get_ordered_moves_with_tt(state, entry, ply):
+    legal = get_legal_moves_all(state, state.turn)
+    if not legal:
+        score = -100000 if is_in_check(state.board, state.turn) else 0
+        return [], score
+    tt_move = entry.best_move if entry else None
+    ordered = ordered_moves(state, legal, tt_move, ply)
+    return ordered, None
+
+def _search_loop(state, ordered, params: 'SearchParams'):
+    """最大化/最小化共通ループ。戻り: (value, best_move, flag)
+    params.alpha/beta は破壊的に更新。"""
+    first_move = ordered[0]
+    best_move = first_move
+    value = -INF if params.maximizing else INF
+    for move in ordered:
+        child_val, timed_out = _search_child(state, move, params)
+        if timed_out:
+            if (params.maximizing and value == -INF) or (not params.maximizing and value == INF):
+                value = evaluate_board(state, params.owner)
+            return value, best_move, 'EXACT'
+        if (params.maximizing and child_val > value) or ((not params.maximizing) and child_val < value):
+            value = child_val
+            best_move = move
+        if params.maximizing:
+            if value > params.alpha:
+                params.alpha = value
+        else:
+            if value < params.beta:
+                params.beta = value
+        if params.alpha >= params.beta:  # cut
+            _record_cut_or_history(first_move, move, params.maximizing, params.owner, params.depth, params.ply)
+            break
+    flag = _final_flag(value, params.original_alpha, params.original_beta)
+    return value, best_move, flag
+
+def alpha_beta_search(state, depth, alpha, beta, maximizing_player, owner, ply, ctx):
+    done, res = _timeout_or_leaf(state, depth, alpha, beta, owner, ply, ctx)
+    if done:
+        return res
     zob = state.zobrist
     hit, alpha2, beta2, entry = _tt_probe(zob, depth, alpha, beta)
     alpha, beta = alpha2, beta2
     if hit and entry:
         return entry.score, entry.best_move
-
-    legal_moves = get_legal_moves_all(state, state.turn)
-    if not legal_moves:
-        score = -100000 if is_in_check(state.board, state.turn) else 0
-        return score, None
-
-    tt_move = entry.best_move if entry else None
-    ordered = ordered_moves(state, legal_moves, tt_move, ply)
-    original_alpha, original_beta = alpha, beta
-    value, best_move, flag, alpha, beta = _search_loop(state, ordered, depth, alpha, beta, maximizing_player, owner, ply, ctx, original_alpha, original_beta)
-    _tt_store(zob, depth, value, flag, best_move, alpha, beta)
+    ordered, empty_score = _get_ordered_moves_with_tt(state, entry, ply)
+    if not ordered:
+        return empty_score, None
+    params = SearchParams(depth, alpha, beta, maximizing_player, owner, ply, ctx)
+    value, best_move, flag = _search_loop(state, ordered, params)
+    _tt_store(zob, depth, value, flag, best_move, params.alpha, params.beta)
     return value, best_move
 
 def iterative_deepening_best_move(state, max_depth, time_limit_ms):
