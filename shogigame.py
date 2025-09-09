@@ -517,7 +517,13 @@ def draw_kifu(screen, state):
     pygame.draw.rect(screen, WHITE, kifu_area_rect); pygame.draw.rect(screen, BLACK, kifu_area_rect, 2)
     info_panel_rect = pygame.Rect(kifu_area_x, kifu_area_y, KIFU_WINDOW_WIDTH, INFO_PANEL_HEIGHT)
     pygame.draw.rect(screen, GRAY, info_panel_rect); pygame.draw.rect(screen, BLACK, info_panel_rect, 2)
-    
+
+    # delegate sub-sections
+    draw_kifu_info(screen, state, kifu_area_x, kifu_area_y)
+    draw_kifu_list(screen, state, kifu_area_x, kifu_area_y)
+    draw_kifu_buttons(screen, state, kifu_area_x)
+
+def draw_kifu_info(screen, state, kifu_area_x, kifu_area_y):
     sente_t, gote_t = state.sente_time, state.gote_time
     if not state.timer_paused and not state.game_over:
         elapsed = time.time() - state.last_move_time
@@ -530,12 +536,12 @@ def draw_kifu(screen, state):
 
     sente_time_str = time.strftime('%H:%M:%S', time.gmtime(sente_t))
     gote_time_str = time.strftime('%H:%M:%S', time.gmtime(gote_t))
-    
     info_texts = [f"手数: {len(state.kifu)}", f"手番: {JAPANESE_TURN_NAME[state.turn]}",
                   f"▲先手: {sente_time_str}", f"△後手: {gote_time_str}"]
     for i, text in enumerate(info_texts):
         screen.blit(FONT.render(text, True, BLACK), (kifu_area_x + 10, kifu_area_y + 5 + i*22))
 
+def draw_kifu_list(screen, state, kifu_area_x, kifu_area_y):
     kifu_list_y = kifu_area_y + INFO_PANEL_HEIGHT + KIFU_LIST_PADDING
     kifu_list_height = HEIGHT-kifu_list_y-WINDOW_PADDING_Y-RESIGN_BUTTON_HEIGHT-SAVE_BUTTON_HEIGHT-MATTA_BUTTON_HEIGHT-TIMER_BUTTON_HEIGHT-40
     max_lines = kifu_list_height // KIFU_ITEM_HEIGHT if KIFU_ITEM_HEIGHT > 0 else 0
@@ -551,6 +557,7 @@ def draw_kifu(screen, state):
     else:
         state.scrollbar_rect = None
 
+def draw_kifu_buttons(screen, state, kifu_area_x):
     resign_button_y = HEIGHT-WINDOW_PADDING_Y-RESIGN_BUTTON_HEIGHT-10
     button_x = kifu_area_x+(KIFU_WINDOW_WIDTH-260)/2
     state.resign_button_rect = pygame.Rect(button_x, resign_button_y, 260, RESIGN_BUTTON_HEIGHT)
