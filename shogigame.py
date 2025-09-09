@@ -5,13 +5,17 @@ import time
 import random
 import csv
 import os
-from typing import List, Tuple, Dict, Optional, Iterable, TypeAlias, Union, Callable, TypedDict, cast
+from typing import List, Tuple, Dict, Optional, Iterable, TypeAlias, Union, Callable, TypedDict, TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    # pygame の型 (実行時は既に import 済み)
+    import pygame as _pygame_type
 
 # --- パス設定 ---
 # スクリプト自身の場所を基準にする
 if hasattr(sys, "_MEIPASS"):
-    # PyInstaller 展開ディレクトリ (mypy: 動的属性) 
-    base_path = getattr(sys, "_MEIPASS")  # type: ignore[attr-defined]
+    # PyInstaller 展開ディレクトリ (動的属性取得) 安全に文字列化
+    base_path = cast(str, getattr(sys, "_MEIPASS"))
 else:
     base_path = os.path.dirname(os.path.abspath(__file__))
 
@@ -59,7 +63,7 @@ PIECE_OFFSET = (SQUARE - PIECE_SIZE) // 2
 FPS = 60
 def _load_fonts() -> Tuple[pygame.font.Font, pygame.font.Font, pygame.font.Font, pygame.font.Font, pygame.font.Font, pygame.font.Font, pygame.font.Font]:
     try:
-        font_path = os.path.join(assets_path, "MPLUS1p-Regular.ttf")
+        font_path = os.path.join(assets_path, "YujiSyuku-Regular.ttf")
         font = pygame.font.Font(font_path, 18)
         large = pygame.font.Font(font_path, 24)
         mono = pygame.font.Font(font_path, 14)
@@ -147,12 +151,27 @@ class Piece:
     def __repr__(self) -> str:
         return f"{self.kind}{'S' if self.owner==0 else 'G'}"
 
+def clone_board(board: Board) -> Board:
+    """Board の軽量クローン (Piece を新規生成)"""
+    return [[(Piece(p.kind, p.owner) if p else None) for p in col] for col in board]
+
 class AnimatedPiece:
     __slots__ = ("piece","x","y","owner","vx","vy","angle","angular_velocity","gravity")
+    piece: Piece
+    x: float
+    y: float
+    owner: int
+    vx: float
+    vy: float
+    angle: float
+    angular_velocity: float
+    gravity: float
     def __init__(self, piece: Piece, x: float, y: float, owner: int):
         self.piece, self.x, self.y, self.owner = piece, x, y, owner
-        self.vx, self.vy = random.uniform(-10, 10), random.uniform(-15, -5)
-        self.angle, self.angular_velocity = 0, random.uniform(-10, 10)
+        self.vx = random.uniform(-10, 10)
+        self.vy = random.uniform(-15, -5)
+        self.angle = 0.0
+        self.angular_velocity = random.uniform(-10, 10)
         self.gravity = 0.5
 
     def update(self) -> bool:
@@ -370,8 +389,12 @@ def _pst(kind: str, y_from_owner0: int) -> int:
 CPU_DIFFICULTIES = {'入門': 'beginner', '初級': 'easy', '中級': 'medium', '上級': 'hard', '達人': 'master'}
 
 class HistoryItem(TypedDict):
+    """対局状態スナップショット。
+    hands は持ち駒種類(kind)の文字列リストを保持 (Piece オブジェクトではない)。
+    board 内の Piece は clone された独立インスタンス。
+    """
     board: Board
-    hands: Dict[int, List['Piece']]
+    hands: Dict[int, List[str]]
     turn: int
     kifu: List[str]
     sente_time: float
@@ -382,7 +405,7 @@ class HistoryItem(TypedDict):
 class GameState:
     # --- 属性型注釈 (mypy Unknown 抑制) ---
     board: Board
-    hands: Dict[int, List['Piece']]
+    hands: Dict[int, List[str]]
     turn: int
     selected: Optional[Tuple[int,int]]
     legal_moves: List[Tuple[int,int]]
@@ -404,12 +427,25 @@ class GameState:
     resigning_animation: bool
     history: List[HistoryItem]
     timer_display_cache: Dict[str, Union[str,float]]
+    zobrist: int  # zobrist ハッシュ値
+    # GUI 関連動的属性 (None 初期化)
+    resign_button_rect: Optional[pygame.Rect]
+    save_button_rect: Optional[pygame.Rect]
+    matta_button_rect: Optional[pygame.Rect]
+    timer_button_rect: Optional[pygame.Rect]
+    scrollbar_rect: Optional[pygame.Rect]
+    scroll_y_start: int
+    scroll_offset_start: int
+    scroll_x_start: int
+    end_processed: bool
+    _last_search_value: float
+
     def __init__(self, handicap: str='平手', mode: str='2P', cpu_difficulty: str='easy', time_limit: Optional[int]=None):
         self.board = standard_setup()
         if handicap in HANDICAPS:
             for pos in HANDICAPS[handicap]():
                 self.board[pos[0]][pos[1]] = None
-
+        # hands: 各手番の持ち駒種類(kind)文字列
         self.hands = {0: [], 1: []}
         self.turn = 0
         self.selected = None
@@ -446,17 +482,32 @@ class GameState:
             'gote': '00:00:00',
             'last_update': 0.0,
         }
+        # 追加初期化 (GUI フィールド)
+        self.resign_button_rect = None
+        self.save_button_rect = None
+        self.matta_button_rect = None
+        self.timer_button_rect = None
+        self.scrollbar_rect = None
+        self.scroll_y_start = 0
+        self.scroll_offset_start = 0
+        self.scroll_x_start = 0
+        self.end_processed = False
+        self.zobrist = 0
+        self._last_search_value = 0.0
 
     def save_history(self) -> None:
+        """現在局面を履歴へ保存。
+        deepcopy 依存を避け、手書き clone で速度と型安全性を両立。
+        """
         history_item: HistoryItem = {
-            'board': cast(Board, deepcopy(self.board)),
-            'hands': cast(Dict[int, List['Piece']], deepcopy(self.hands)),
+            'board': clone_board(self.board),
+            'hands': {0: self.hands[0][:], 1: self.hands[1][:]},
             'turn': self.turn,
             'kifu': list(self.kifu),
             'sente_time': self.sente_time,
             'gote_time': self.gote_time,
             'last_move_target': self.last_move_target,
-            'in_sudden_death': cast(Dict[int,bool], deepcopy(self.in_sudden_death)),
+            'in_sudden_death': {0: self.in_sudden_death[0], 1: self.in_sudden_death[1]},
         }
         self.history.append(history_item)
 
@@ -516,17 +567,26 @@ def generate_all_moves_no_check(board: List[List[Optional[Piece]]], x: Optional[
     return moves
 
 def generate_all_moves(board: Board, x: Optional[int], y: int, owner: int, kind: Optional[str]=None, check_rule: bool=True) -> List[Tuple[int,int]]:
+    """(x,y) から到達可能な合法手 (打ち手は x=None) を返す。
+    check_rule=False の場合は王手放置も許容。
+    """
     moves = generate_all_moves_no_check(board, x, y, owner, kind)
-    if not check_rule: return moves
-    valid_moves = []
+    if not check_rule:
+        return moves
+    valid_moves: List[Tuple[int,int]] = []
     for tx, ty in moves:
         temp_board = deepcopy(board)
         if x is None and kind is not None:
             temp_board[tx][ty] = Piece(kind, owner)
-        else:
+        elif x is not None:
             piece = temp_board[x][y]
+            if piece is None:
+                continue
             temp_board[tx][ty], temp_board[x][y] = piece.clone(), None
-        if not is_in_check(temp_board, owner): valid_moves.append((tx, ty))
+        else:
+            continue
+        if not is_in_check(temp_board, owner):
+            valid_moves.append((tx, ty))
     return valid_moves
 
 def get_legal_moves_all(state: 'GameState', owner: int) -> List[Move]:
@@ -534,7 +594,7 @@ def get_legal_moves_all(state: 'GameState', owner: int) -> List[Move]:
     # 探索中は高速版を優先
     if getattr(state, 'fast_mode', False):
         return get_legal_moves_all_fast(state, owner)
-    all_moves = []
+    all_moves: List[Move] = []
     board = state.board
     for x in range(BOARD_SIZE):
         col = board[x]
@@ -542,8 +602,8 @@ def get_legal_moves_all(state: 'GameState', owner: int) -> List[Move]:
             p = col[y]
             if p and p.owner == owner:
                 all_moves.extend([(x, y, tx, ty) for tx, ty in generate_all_moves(board, x, y, owner)])
-    for idx, piece in enumerate(list(state.hands[owner])):
-        all_moves.extend([(None, idx, tx, ty) for tx, ty in generate_all_moves(board, None, idx, owner, kind=piece.kind)])
+    for idx, kind in enumerate(list(state.hands[owner])):
+        all_moves.extend([(None, idx, tx, ty) for tx, ty in generate_all_moves(board, None, idx, owner, kind=kind)])
     return all_moves
 
 # ----------------------
@@ -568,7 +628,7 @@ def get_legal_moves_all_fast(state: 'GameState', owner: int) -> List[Move]:
     - 精度より速度優先 (例: 不成でのみ合法な手は探索では現れない前提)
     """
     board = state.board
-    legal = []
+    legal: List[Move] = []
     # 盤上駒
     for x in range(BOARD_SIZE):
         col = board[x]
@@ -990,13 +1050,13 @@ def ask_continue_screen(screen):
 # 評価関数 (キャッシュ + 段階的要素 + 高速概算モビリティ)
 ########################################################
 
-EVAL_CACHE = {}
+EVAL_CACHE: Dict[int, float] = {}
 EVAL_CACHE_MAX = 200000
 
 def _eval_material_and_positional(state):
-    material = {0:0, 1:0}
-    positional = {0:0, 1:0}
-    king_pos = {0:None, 1:None}
+    material: Dict[int, float] = {0:0.0, 1:0.0}
+    positional: Dict[int, float] = {0:0.0, 1:0.0}
+    king_pos: Dict[int, Optional[Tuple[int,int]]] = {0:None, 1:None}
     board = state.board
     for y in range(BOARD_SIZE):
         for x in range(BOARD_SIZE):
@@ -1017,16 +1077,13 @@ def _eval_material_and_positional(state):
     hand_scale = 0.9 + 0.1 * phase
     for o in (0,1):
         for k in state.hands[o]:
-            material[o] += PIECE_VALUES.get(k,0) * hand_scale
+            material[o] += float(PIECE_VALUES.get(k,0)) * hand_scale
     return material, positional, king_pos, phase
 
 def _eval_mobility_fast(state):
-    """フル合法手生成を避けた概算モビリティ。
-    - スライダー: 4/8 方向に最初のブロックまで空きマス数
-    - ステップ駒: 利用可能候補数
-    """
+    """フル合法手生成を避けた概算モビリティ (float)。"""
     board = state.board
-    mob = {0:0,1:0}
+    mob: Dict[int, float] = {0:0.0,1:0.0}
     for y in range(BOARD_SIZE):
         for x in range(BOARD_SIZE):
             p = board[x][y]
@@ -1045,12 +1102,12 @@ def _eval_mobility_fast(state):
                     step_score = 0
                     while in_bounds(nx,ny):
                         if not board[nx][ny]:
-                            step_score += 1
+                            step_score += 1.0
                         else:
-                            step_score += 0.5 if board[nx][ny].owner != o else 0
+                            step_score += 0.5 if board[nx][ny].owner != o else 0.0
                             break
                         nx += dx; ny += dy
-                    mob[o] += step_score * 0.6
+                        mob[o] += float(step_score) * 0.6
             else:
                 key = p.kind if p.kind in STEP_MOVES else demote_kind(p.kind)
                 for dx,dy in STEP_MOVES.get(key, []):
@@ -1268,11 +1325,11 @@ class TTEntry:
         self.zobrist=zobrist; self.depth=depth; self.score=score; self.flag=flag
         self.best_move=best_move; self.alpha=alpha; self.beta=beta
 
-TT = {}
+TT: Dict[int, 'TTEntry'] = {}
 TT_MAX_SIZE = 50000
 
-KILLER_MOVES = {}  # depth -> [m1, m2]
-HISTORY_TABLE = {} # (turn, move_key) -> score
+KILLER_MOVES: Dict[int, List[Move]] = {}  # depth -> [m1, m2]
+HISTORY_TABLE: Dict[Tuple[int, Tuple[Optional[int], int, int, int]], int] = {} # (turn, move_key) -> score
 
 def move_key_for_history(move):
     sx, sy, tx, ty = move
@@ -1656,6 +1713,8 @@ def apply_move(state: 'GameState', move: Move, is_cpu: bool=False, screen=None, 
     sx, sy_or_idx, tx, ty = move
     if sx is not None:
         piece, captured = state.board[sx][sy_or_idx], state.board[tx][ty]
+        if piece is None:  # 安全ガード (合法手生成前提で基本発生しない)
+            return
         dest = "同" if state.last_move_target==(tx,ty) else coords_to_kifu(tx,ty)
         kifu_text = f"{JAPANESE_TURN_SYMBOL[state.turn]}{dest}{JAPANESE_PIECE_NAMES[demote_kind(piece.kind)]}"
         promo = False
@@ -1689,7 +1748,7 @@ def apply_move(state: 'GameState', move: Move, is_cpu: bool=False, screen=None, 
     state.timer_display_cache['last_update'] = 0.0
 
     if is_in_check(state.board, state.turn):
-        state.check_display_time = time.time()
+            state.check_display_time = time.time()
 
     if sound_itte and not is_cpu: sound_itte.play()
     if check_sennichite(state): return
@@ -1713,6 +1772,8 @@ def parse_kifu_to_move(state: 'GameState', kifu_str: str) -> Tuple[Move, Optiona
     drop, promo, no_promo = "打" in kifu_str, "成" in kifu_str, "不成" in kifu_str
     promo_flag = promo if (promo or no_promo) else None
     if kifu_str[1] == "同":
+        if state.last_move_target is None:
+            raise ValueError("'同' 指しの参照先が存在しません")
         tx,ty = state.last_move_target
         p_name = kifu_str[2:].replace("成","").replace("不成","").replace("打","")
     else:

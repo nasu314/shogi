@@ -1,1 +1,3 @@
 pygame
+# 型チェック用
+mypy
