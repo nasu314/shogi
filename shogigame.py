@@ -289,13 +289,41 @@ def standard_setup():
     return board
 
 HANDICAPS = {
-    '通常': [],
-    '角落ち': [('B', (1, 1))],
-    '飛車落ち': [('R', (7, 1))],
-    '二枚落ち': [('R', (7, 1)), ('B', (1, 1))],
-    '四枚落ち': [('R', (7, 1)), ('B', (1, 1)), ('L', (0, 0)), ('L', (8, 0))],
-    '六枚落ち': [('R', (7, 1)), ('B', (1, 1)), ('L', (0, 0)), ('L', (8, 0)), ('N', (1, 0)), ('N', (7, 0))],
+    '平手': standard_setup,
+    '香落ち': lambda: handicap_setup({ 'L': 0 }),
+    '角落ち': lambda: handicap_setup({ 'B': 0 }),
+    '飛車落ち': lambda: handicap_setup({ 'R': 0 }),
+    '飛香落ち': lambda: handicap_setup({ 'R': 0, 'L': 0 }),
+    '二枚落ち': lambda: handicap_setup({ 'R': 0, 'B': 0 }),
 }
+
+# Piece-square tables (owner=0 perspective)
+PST_TABLES = {
+    'P': [0,1,2,3,3,2,1,0,0],
+    'S': [0,1,2,2,2,2,1,0,0],
+    'G': [0,1,2,3,3,2,1,0,0],
+    'L': [0,1,2,3,4,3,2,1,0],
+    'N': [0,0,1,2,3,2,1,0,0],
+    'B': [0,1,1,2,2,2,1,1,0],
+    '+B': [0,1,1,2,2,2,1,1,0],
+    'R': [0,0,1,2,2,2,1,0,0],
+    '+R': [0,0,1,2,2,2,1,0,0],
+    '+P': [0,1,2,3,3,2,1,0,0],
+    '+S': [0,1,2,3,3,2,1,0,0],
+    '+L': [0,1,2,3,3,2,1,0,0],
+    '+N': [0,1,2,3,3,2,1,0,0],
+    'K': [2,3,2,1,0,1,2,3,2],
+}
+
+def _pst(kind, y_from_owner0):
+    tbl = PST_TABLES.get(kind)
+    if tbl is None:
+        return 0
+    if y_from_owner0 < 0:
+        y_from_owner0 = 0
+    elif y_from_owner0 > 8:
+        y_from_owner0 = 8
+    return tbl[y_from_owner0]
 CPU_DIFFICULTIES = {'入門': 'beginner', '初級': 'easy', '中級': 'medium', '上級': 'hard', '達人': 'master'}
 
 class GameState:
@@ -804,36 +832,7 @@ def ask_continue_screen(screen):
         pygame.display.flip(); clock.tick(FPS)
 
 def evaluate_board(state, owner):
-    # --- 基本駒価値 + 位置評価 + モビリティ + 王安全性 ---
-    # 簡易 piece-square テーブル (先手基準: owner=0 視点。後手は反転)
-    # 盤は 9x9 (x:0-8, y:0-8)。前進方向: owner=0 は y 減少, owner=1 は y 増加。
-    PST_PAWN = [0,1,2,3,3,2,1,0,0]
-    PST_SILVER = [0,1,2,2,2,2,1,0,0]
-    PST_GOLD = [0,1,2,3,3,2,1,0,0]
-    PST_LANCE = [0,1,2,3,4,3,2,1,0]
-    PST_KNIGHT = [0,0,1,2,3,2,1,0,0]
-    PST_BISHOP = [0,1,1,2,2,2,1,1,0]
-    PST_ROOK = [0,0,1,2,2,2,1,0,0]
-    PST_KING_MID = [2,3,2,1,0,1,2,3,2]
-
-    def pst_bonus(kind, y_local):
-        table = None
-        if kind == 'P': table = PST_PAWN
-        elif kind == 'S': table = PST_SILVER
-        elif kind in ('G','+P','+S','+L','+N'): table = PST_GOLD
-        elif kind == 'L': table = PST_LANCE
-        elif kind == 'N': table = PST_KNIGHT
-        elif kind in ('B','+B'): table = PST_BISHOP
-        elif kind in ('R','+R'): table = PST_ROOK
-        elif kind == 'K': table = PST_KING_MID
-        if table:
-            return table[min(max(y_local,0),8)]
-        return 0
-
-    material = 0
-    positional = 0
-    mobility = 0
-    king_safety = 0
+    material = positional = mobility = king_safety = 0
     king_pos = {0: None, 1: None}
 
     # 素朴な効き数用: 各自の合法手数を最後に再利用
@@ -853,7 +852,7 @@ def evaluate_board(state, owner):
                 val += 10
             # 位置ボーナス (視点統一: owner=0 から見て上方向が善)
             y_for_owner0 = y if piece.owner == 0 else 8 - y
-            pos = pst_bonus(piece.kind, y_for_owner0)
+            pos = _pst(piece.kind, y_for_owner0)
             if piece.owner == owner:
                 material += val
                 positional += pos
@@ -876,23 +875,20 @@ def evaluate_board(state, owner):
     state.turn = current_turn
 
     # 王安全性: 周囲 8 マスの味方駒数差分 (敵駒減点)
-    def king_zone_score(pos, owner_):
+    def _kzone(pos, own):
         if not pos: return 0
-        kx, ky = pos
-        s = 0
+        kx, ky = pos; s = 0
         for dx in (-1,0,1):
             for dy in (-1,0,1):
-                if dx==0 and dy==0: continue
+                if not (dx or dy):
+                    continue
                 nx, ny = kx+dx, ky+dy
                 if 0 <= nx < BOARD_SIZE and 0 <= ny < BOARD_SIZE:
                     pc = state.board[nx][ny]
                     if pc:
-                        if pc.owner == owner_:
-                            s += 0.8
-                        else:
-                            s -= 0.9
+                        s += 0.8 if pc.owner == own else -0.9
         return s
-    king_safety = king_zone_score(king_pos[owner], owner) - king_zone_score(king_pos[1-owner], 1-owner)
+    king_safety = _kzone(king_pos[owner], owner) - _kzone(king_pos[1-owner], 1-owner)
 
     return material + positional + mobility + king_safety
 
