@@ -30,7 +30,10 @@ kifu_path = os.path.join(base_path, "shogi_kifu.csv")
 
 
 pygame.init()
-pygame.mixer.init()
+try:
+    pygame.mixer.init()
+except pygame.error:
+    print("Audio not available in original shogigame.py")
 
 BOARD_SIZE = 9
 SQUARE = 64
