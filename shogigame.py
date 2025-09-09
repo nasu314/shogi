@@ -5,7 +5,7 @@ import time
 import random
 import csv
 import os
-from typing import List, Tuple, Dict, Optional, Iterable, Any, Callable, TypeAlias
+from typing import List, Tuple, Dict, Optional, Iterable, TypeAlias, Union, Callable
 
 # --- パス設定 ---
 # スクリプト自身の場所を基準にする
@@ -85,7 +85,11 @@ def _load_fonts() -> Tuple[pygame.font.Font, pygame.font.Font, pygame.font.Font,
 FONT, LARGE_FONT, MONO_FONT, TITLE_FONT, CHECK_FONT, GREETING_FONT, RESULT_FONT = _load_fonts()
 
 # 型エイリアス
-Board: TypeAlias = "List[List[Optional[Piece]]]"  # 前方参照的利用のため文字列で
+Board = List[List[Optional['Piece']]]  # 実体的エイリアス
+# 盤上移動手 (sx, sy, tx, ty) / 打ち手 (None, hand_index, tx, ty)
+BoardMove: TypeAlias = Tuple[int, int, int, int]
+DropMove: TypeAlias = Tuple[None, int, int, int]
+Move = Union[BoardMove, DropMove]
 
 # 色の定義
 WHITE = (223, 235, 234)
@@ -281,7 +285,7 @@ def _pawn_drop_would_result_in_checkmate(board: List[List[Optional[Piece]]], nx:
 
 def _generate_promoted_moves(board: List[List[Optional[Piece]]], x: int, y: int, p: Piece) -> List[Tuple[int,int]]:
     """Generate moves for promoted R/B (they have step moves + base sliders)."""
-    moves = []
+    moves: List[Tuple[int,int]] = []
     _add_step_moves(board, x, y, p.owner, p.kind, moves)
     base_kind = demote_kind(p.kind)
     if base_kind == 'R':
@@ -290,8 +294,8 @@ def _generate_promoted_moves(board: List[List[Optional[Piece]]], x: int, y: int,
         _add_slider_moves(board, x, y, p.owner, [(-1, -1), (-1, 1), (1, -1), (1, 1)], moves)
     return moves
 
-def standard_setup():
-    board = [[None for _ in range(BOARD_SIZE)] for __ in range(BOARD_SIZE)]
+def standard_setup() -> Board:
+    board: Board = [[None for _ in range(BOARD_SIZE)] for __ in range(BOARD_SIZE)]
     back = ['L', 'N', 'S', 'G', 'K', 'G', 'S', 'N', 'L']
     for x, k in enumerate(back):
         board[x][0] = Piece(k, 1)
@@ -305,7 +309,7 @@ def standard_setup():
         board[x][8] = Piece(k, 0)
     return board
 
-def handicap_setup(remove_kinds):
+def handicap_setup(remove_kinds: List[str]) -> List[Tuple[int,int]]:
     """指定された種類(kind)の駒を後手(上手 side=1)から取り除く位置リストを返す。
     remove_kinds: 取り除きたい駒のリスト ['R','B',...] のような形式。
     戻り値: [(x,y), ...]
@@ -327,7 +331,7 @@ def handicap_setup(remove_kinds):
                 break
     return positions
 
-HANDICAPS = {
+HANDICAPS: Dict[str, Callable[[], List[Tuple[int,int]]]] = {
     '平手': lambda: [],
     '香落ち': lambda: handicap_setup(['L']),
     '角落ち': lambda: handicap_setup(['B']),
@@ -354,7 +358,7 @@ PST_TABLES = {
     'K': [2,3,2,1,0,1,2,3,2],
 }
 
-def _pst(kind, y_from_owner0):
+def _pst(kind: str, y_from_owner0: int) -> int:
     tbl = PST_TABLES.get(kind)
     if tbl is None:
         return 0
@@ -366,7 +370,7 @@ def _pst(kind, y_from_owner0):
 CPU_DIFFICULTIES = {'入門': 'beginner', '初級': 'easy', '中級': 'medium', '上級': 'hard', '達人': 'master'}
 
 class GameState:
-    def __init__(self, handicap='平手', mode='2P', cpu_difficulty='easy', time_limit=None):
+    def __init__(self, handicap: str='平手', mode: str='2P', cpu_difficulty: str='easy', time_limit: Optional[int]=None):
         self.board = standard_setup()
         if handicap in HANDICAPS:
             for pos in HANDICAPS[handicap]():
@@ -432,7 +436,7 @@ class GameState:
         self.selected, self.selected_hand, self.legal_moves = None, None, []
 
 
-def find_king(board, owner):
+def find_king(board: Board, owner: int) -> Optional[Tuple[int,int]]:
     for x in range(BOARD_SIZE):
         for y in range(BOARD_SIZE):
             p = board[x][y]
@@ -440,7 +444,7 @@ def find_king(board, owner):
                 return (x, y)
     return None
 
-def is_in_check(board, owner):
+def is_in_check(board: Board, owner: int) -> bool:
     king_pos = find_king(board, owner)
     if not king_pos:
         return False
@@ -474,7 +478,7 @@ def generate_all_moves_no_check(board: List[List[Optional[Piece]]], x: Optional[
         _add_slider_moves(board, x, y, p.owner, dirs, moves)
     return moves
 
-def generate_all_moves(board, x, y, owner, kind=None, check_rule=True):
+def generate_all_moves(board: Board, x: Optional[int], y: int, owner: int, kind: Optional[str]=None, check_rule: bool=True) -> List[Tuple[int,int]]:
     moves = generate_all_moves_no_check(board, x, y, owner, kind)
     if not check_rule: return moves
     valid_moves = []
@@ -487,7 +491,7 @@ def generate_all_moves(board, x, y, owner, kind=None, check_rule=True):
         if not is_in_check(temp_board, owner): valid_moves.append((tx, ty))
     return valid_moves
 
-def get_legal_moves_all(state, owner):
+def get_legal_moves_all(state: 'GameState', owner: int) -> List[Move]:
     """汎用(遅い)合法手生成。探索時は fast_mode を使う。"""
     # 探索中は高速版を優先
     if getattr(state, 'fast_mode', False):
@@ -507,7 +511,7 @@ def get_legal_moves_all(state, owner):
 # ----------------------
 # 高速探索用 合法手生成
 # ----------------------
-def _pseudo_moves_for_piece(board, x, y, owner, piece):
+def _pseudo_moves_for_piece(board: Board, x: int, y: int, owner: int, piece: Piece) -> List[Tuple[int,int]]:
     """盤上駒の擬似(王手放置考慮なし)移動先を列挙。"""
     if piece.kind in ['B+', 'R+']:
         return _generate_promoted_moves(board, x, y, piece)
@@ -519,7 +523,7 @@ def _pseudo_moves_for_piece(board, x, y, owner, piece):
         _add_slider_moves(board, x, y, owner, dirs, moves)
     return moves
 
-def get_legal_moves_all_fast(state, owner):
+def get_legal_moves_all_fast(state: 'GameState', owner: int) -> List[Move]:
     """deepcopy を使わず make/unmake せずに簡易シミュレーションで合法手判定。
     - 王手放置判定は最小限の盤操作で実施
     - optional 成りは常に『成る』として扱い (CPU の方針に合わせる)
@@ -576,7 +580,7 @@ def get_legal_moves_all_fast(state, owner):
     # 王手でない場合 in_check_now は未使用だが分岐保持 (将来拡張余地)
     return legal
 
-def check_mate(state):
+def check_mate(state: 'GameState') -> bool:
     # If the king for the side to move is missing (captured), treat as mate/game over
     king_pos = find_king(state.board, state.turn)
     if not king_pos:
@@ -588,10 +592,10 @@ def check_mate(state):
         return True
     return False
 
-def check_sennichite(state):
+def check_sennichite(state: 'GameState') -> bool:
     return False
 
-def load_piece_images():
+def load_piece_images() -> Dict[Tuple[str,int], pygame.Surface]:
     pieces = {}
     names = ["K","G","S","N","L","P","B","R","S+","N+","L+","P+","B+","R+"]
     for n in names:
@@ -1081,11 +1085,11 @@ def evaluate_board(state, owner):
         EVAL_CACHE[zob] = score_side0
     return score_side0 if owner==0 else -score_side0
 
-def get_cpu_move_beginner(state):
+def get_cpu_move_beginner(state: 'GameState') -> Optional[Move]:
     legal_moves = get_legal_moves_all(state, state.turn)
     return random.choice(legal_moves) if legal_moves else None
 
-def get_cpu_move_easy(state):
+def get_cpu_move_easy(state: 'GameState') -> Optional[Move]:
     legal_moves = get_legal_moves_all(state, state.turn)
     if not legal_moves: return None
     capture_moves = [m for m in legal_moves if m[0] is not None and state.board[m[2]][m[3]]]
@@ -1589,17 +1593,17 @@ def iterative_deepening_best_move(state, max_depth, time_limit_ms):
     state.fast_mode = False
     return best_move
 
-def get_cpu_move_hard(state):
+def get_cpu_move_hard(state: 'GameState') -> Optional[Move]:
     return iterative_deepening_best_move(state, max_depth=4, time_limit_ms=600)
 
-def get_cpu_move_master(state):
+def get_cpu_move_master(state: 'GameState') -> Optional[Move]:
     return iterative_deepening_best_move(state, max_depth=6, time_limit_ms=1500)
 
 # medium も軽い反復深化に差し替え
-def get_cpu_move_medium(state):  # 新探索版 (再定義)
+def get_cpu_move_medium(state: 'GameState') -> Optional[Move]:  # 新探索版 (再定義)
     return iterative_deepening_best_move(state, max_depth=3, time_limit_ms=250) or get_cpu_move_easy(state)
 
-def apply_move(state, move, is_cpu=False, screen=None, force_promotion=None, update_history=True):
+def apply_move(state: 'GameState', move: Move, is_cpu: bool=False, screen=None, force_promotion: Optional[bool]=None, update_history: bool=True) -> None:
     if update_history: state.save_history()
 
     if not state.timer_paused:
@@ -1656,7 +1660,7 @@ def apply_move(state, move, is_cpu=False, screen=None, force_promotion=None, upd
         state.checkmate_display_time = time.time()
         if sound_end and not is_cpu: sound_end.play()
 
-def save_kifu_to_csv(kifu):
+def save_kifu_to_csv(kifu: List[str]) -> bool:
     try:
         with open(kifu_path, 'w', newline='', encoding='utf-8') as f:
             writer=csv.writer(f); writer.writerow(['手数','棋譜'])
@@ -1664,7 +1668,7 @@ def save_kifu_to_csv(kifu):
         return True
     except IOError as e: print(f"ファイル保存失敗: {e}"); return False
 
-def parse_kifu_to_move(state, kifu_str):
+def parse_kifu_to_move(state: 'GameState', kifu_str: str) -> Tuple[Move, Optional[bool]]:
     kifu_str = kifu_str.strip().translate(ZEN_TO_HAN_TABLE)
     turn = 0 if kifu_str[0]=='▲' else 1
     if turn != state.turn: raise ValueError("Turn mismatch")
@@ -1694,7 +1698,7 @@ def parse_kifu_to_move(state, kifu_str):
         if len(sources)>1: print(f"Ambiguous move: {kifu_str}")
         return ((sources[0][0],sources[0][1],tx,ty), promo_flag)
 
-def load_kifu_and_setup_state(handicap, mode, cpu_difficulty, time_limit=None):
+def load_kifu_and_setup_state(handicap: str, mode: str, cpu_difficulty: str, time_limit: Optional[int]=None) -> 'GameState':
     state = GameState(handicap, mode, cpu_difficulty, time_limit)
     try:
         with open(kifu_path, 'r', encoding='utf-8') as f:
@@ -1709,7 +1713,7 @@ def load_kifu_and_setup_state(handicap, mode, cpu_difficulty, time_limit=None):
     state.history = []
     return state
 
-def game_over_screen(screen, state):
+def game_over_screen(screen, state: 'GameState') -> str:
     buttons = [
         {'rect': pygame.Rect(WIDTH//2-150, HEIGHT//2+50, 300, 50), 'text': "棋譜を保存", 'action': 'SAVE'},
         {'rect': pygame.Rect(WIDTH//2-150, HEIGHT//2+120, 300, 50), 'text': "再対局", 'action': 'REMATCH'},
@@ -1752,7 +1756,7 @@ def game_over_screen(screen, state):
         pygame.display.flip()
         pygame.time.Clock().tick(FPS)
 
-def main(initial_settings=None, skip_start=False):
+def main(initial_settings: Optional[Dict[str, object]]=None, skip_start: bool=False):
     screen = pygame.display.set_mode((WIDTH, HEIGHT)); pygame.display.set_caption("将棋道場")
     piece_images = load_piece_images()
 
@@ -1802,7 +1806,7 @@ def main(initial_settings=None, skip_start=False):
     return 'QUIT', settings
 
 
-def _handle_cpu_turn(screen, state, piece_images):
+def _handle_cpu_turn(screen, state: 'GameState', piece_images) -> None:
     """Handle CPU thinking and move application when in CPU mode."""
     if state.mode == 'CPU' and state.turn == 1 and not state.game_over:
         if not state.cpu_thinking:
@@ -1817,7 +1821,7 @@ def _handle_cpu_turn(screen, state, piece_images):
             apply_move(state, cpu_move, is_cpu=True, screen=screen)
 
 
-def _handle_events(screen, state, mx, my, drag_kifu, drag_hand):
+def _handle_events(screen, state: 'GameState', mx: int, my: int, drag_kifu: bool, drag_hand: Dict[int,bool]):
     """Process pygame events extracted from main. Returns (running, drag_kifu, drag_hand)."""
     running = True
     for event in pygame.event.get():
@@ -1842,9 +1846,12 @@ def _handle_events(screen, state, mx, my, drag_kifu, drag_hand):
             elif getattr(state, 'matta_button_rect', None) and state.matta_button_rect.collidepoint(mx, my):
                 if len(state.history) > 0:
                     steps = 2 if state.mode == 'CPU' and len(state.history) > 1 and state.turn == 0 else 1
+                    last_state = None
                     for _ in range(steps):
-                        if state.history: last_state = state.history.pop()
-                    state.load_history(last_state)
+                        if state.history:
+                            last_state = state.history.pop()
+                    if last_state is not None:
+                        state.load_history(last_state)
             elif getattr(state, 'timer_button_rect', None) and state.timer_button_rect.collidepoint(mx, my):
                 state.timer_paused = not state.timer_paused
                 if not state.timer_paused: state.last_move_time = time.time()
