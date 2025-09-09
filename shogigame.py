@@ -1263,6 +1263,21 @@ class SearchContext:
 
 INF = 10**9
 
+# 探索パラメータ (微調整しやすいよう一元化)
+SEARCH_PARAMS = {
+    'aspiration_window': 60,          # 初期ウィンドウ (評価点単位)
+    'aspiration_step': 120,           # 失敗ごと拡張幅
+    'null_move_min_depth': 3,
+    'null_move_deep_threshold': 6,
+    'null_move_base_reduction': 2,
+    'null_move_deep_bonus': 1,
+    'lmr_min_depth': 3,
+    'lmr_first_late_index': 4,
+    'lmr_deeper_index': 8,
+    'lmr_reduction_deep': 1,
+    'lmr_reduction_deeper': 2
+}
+
 def _generate_capture_moves(state):
     """現在手番の合法手のうち駒取り手のみを列挙。"""
     moves = []
@@ -1395,6 +1410,18 @@ def _search_child(state, move, params: 'SearchParams'):
         return child_val, True
     return child_val, False
 
+def _search_child_reduced(state, move, params: 'SearchParams', reduction_depth):
+    """LMR 用: 減深で1手探索。"""
+    undo = apply_move_fast(state, move)
+    recompute_zobrist(state)
+    child_val, _ = alpha_beta_search(state, params.depth-1-reduction_depth, params.alpha, params.beta,
+                                     not params.maximizing, params.owner, params.ply+1, params.ctx)
+    undo_move_fast(state, move, undo)
+    recompute_zobrist(state)
+    if params.ctx.timeout:
+        return child_val, True
+    return child_val, False
+
 def _record_cut_or_history(first_move, current_move, maximizing, owner, depth, ply):
     if current_move != first_move:
         store_killer(ply, current_move)
@@ -1433,8 +1460,24 @@ def _search_loop(state, ordered, params: 'SearchParams'):
     first_move = ordered[0]
     best_move = first_move
     value = -INF if params.maximizing else INF
-    for move in ordered:
-        child_val, timed_out = _search_child(state, move, params)
+    for idx, move in enumerate(ordered):
+        # LMR 判定: 深さ十分 & 非捕獲静かな後半の手 & 王手でない
+        do_lmr = False
+        reduction = 0
+        if params.depth >= 3 and idx >= 4:
+            sx, _, tx, ty = move
+            is_capture = (sx is not None and state.board[tx][ty] is not None)
+            if not is_capture and not is_in_check(state.board, state.turn):
+                do_lmr = True
+                # 簡易係数 (遅い手ほど多く減らすが最大1)
+                reduction = 1 if params.depth >= 4 and idx >= 8 else 0
+        if do_lmr and reduction > 0:
+            child_val, timed_out = _search_child_reduced(state, move, params, reduction)
+            # fail-high (alpha 更新) ならフル深さで再探索
+            if not timed_out and params.maximizing and child_val > params.alpha or (not params.maximizing and child_val < params.beta):
+                child_val, timed_out = _search_child(state, move, params)
+        else:
+            child_val, timed_out = _search_child(state, move, params)
         if timed_out:
             if (params.maximizing and value == -INF) or (not params.maximizing and value == INF):
                 value = evaluate_board(state, params.owner)
@@ -1463,6 +1506,31 @@ def alpha_beta_search(state, depth, alpha, beta, maximizing_player, owner, ply, 
     alpha, beta = alpha2, beta2
     if hit and entry:
         return entry.score, entry.best_move
+    # Null Move Pruning 条件
+    if depth >= 3 and not is_in_check(state.board, state.turn):
+        # 最低限の駒(王+α)確認
+        non_king_count = 0
+        for x in range(BOARD_SIZE):
+            for y in range(BOARD_SIZE):
+                p = state.board[x][y]
+                if p and p.owner == state.turn and p.kind != 'K':
+                    non_king_count += 1
+                    if non_king_count > 1:
+                        break
+            if non_king_count > 1:
+                break
+        if non_king_count > 1:  # 実質終盤でなければ
+            # Null move
+            state.turn = 1 - state.turn
+            recompute_zobrist(state)
+            R = 2 if depth < 6 else 3
+            score, _ = alpha_beta_search(state, depth-1-R, -beta, -beta+1, not maximizing_player, owner, ply+1, ctx)
+            state.turn = 1 - state.turn
+            recompute_zobrist(state)
+            if ctx.timeout:
+                return (alpha, None)
+            if score >= beta:
+                return beta, None
     ordered, empty_score = _get_ordered_moves_with_tt(state, entry, ply)
     if not ordered:
         return empty_score, None
@@ -1472,19 +1540,32 @@ def alpha_beta_search(state, depth, alpha, beta, maximizing_player, owner, ply, 
     return value, best_move
 
 def iterative_deepening_best_move(state, max_depth, time_limit_ms):
-    # 初期 zobrist
     recompute_zobrist(state)
-    # 探索高速化モード ON
     state.fast_mode = True
     ctx = SearchContext(time_limit_ms)
     best_move = None
     best_value = -INF
+    prev_value = 0
     for d in range(1, max_depth+1):
-        val, move = alpha_beta_search(state, d, -INF, INF, True, state.turn, 0, ctx)
-        if not ctx.timeout and move is not None:
-            best_move = move
-            best_value = val
-        elif ctx.timeout and best_move is not None:
+        # Aspiration window 設定
+        window = SEARCH_PARAMS['aspiration_window'] if d > 1 else INF
+        alpha = -INF if d == 1 else prev_value - window
+        beta = INF if d == 1 else prev_value + window
+        while True:
+            val, move = alpha_beta_search(state, d, alpha, beta, True, state.turn, 0, ctx)
+            if ctx.timeout:
+                break
+            if d > 1 and val <= alpha:
+                alpha -= SEARCH_PARAMS['aspiration_step']
+                continue
+            if d > 1 and val >= beta:
+                beta += SEARCH_PARAMS['aspiration_step']
+                continue
+            # 成功
+            if move is not None:
+                best_move = move
+                best_value = val
+                prev_value = val
             break
         if ctx.timeout:
             break
