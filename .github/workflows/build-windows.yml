@@ -18,13 +18,8 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
       - name: Build exe with PyInstaller
-        run: |
-          # Bundle the entire assets folder (images, fonts, sounds) into the exe
-          # Do NOT include save data (`shogi_kifu.csv`) — it should be generated/kept externally
-          # On Windows PyInstaller expects a semicolon separator between source and destination
-          pyinstaller --onefile --noconsole \
-            --add-data "assets;assets" \
-            shogigame.py
+        shell: pwsh
+        run: pyinstaller --onefile --noconsole --add-data "assets;assets" shogigame.py
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
