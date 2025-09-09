@@ -5,7 +5,7 @@ import time
 import random
 import csv
 import os
-
+    
 # --- パス設定 ---
 # スクリプト自身の場所を基準にする
 try:
@@ -13,29 +13,31 @@ try:
     base_path = sys._MEIPASS
 except AttributeError:
     base_path = os.path.dirname(os.path.abspath(__file__))
-
+    
 # 画像と音声フォルダへのパスを作成
-image_path = os.path.join(base_path, "images")
-sound_path = os.path.join(base_path, "sound")
-# shogi_kifu.csvはスクリプト（またはパッケージ展開先）の直下に置かれることを想定
+assets_path = os.path.join(base_path, "assets")
+# assets内のimagesおよびsoundを参照する
+image_path = os.path.join(assets_path, "images")
+sound_path = os.path.join(assets_path, "sound")
+# 棋譜ファイルはスクリプト（またはパッケージ展開先）の直下に置く
 # PyInstallerなどで配布された場合でも base_path を基準とする
 kifu_path = os.path.join(base_path, "shogi_kifu.csv")
-
-
+    
+    
 pygame.init()
 pygame.mixer.init()
-
+    
 BOARD_SIZE = 9
 SQUARE = 64
 BOARD_PIXEL_WIDTH = SQUARE * BOARD_SIZE
 BOARD_PIXEL_HEIGHT = SQUARE * BOARD_SIZE
-
+    
 COORD_MARGIN = 30
-
+    
 WINDOW_PADDING_X = 50
 WINDOW_PADDING_Y = 50
 HAND_AREA_HEIGHT = 80
-
+    
 KIFU_WINDOW_WIDTH = 300
 INFO_PANEL_HEIGHT = 100
 KIFU_ITEM_HEIGHT = 20
@@ -44,17 +46,17 @@ SAVE_BUTTON_HEIGHT = 40
 MATTA_BUTTON_HEIGHT = 40
 TIMER_BUTTON_HEIGHT = 40
 KIFU_LIST_PADDING = 10
-
+    
 WIDTH = BOARD_PIXEL_WIDTH + WINDOW_PADDING_X * 2 + KIFU_WINDOW_WIDTH + WINDOW_PADDING_X + COORD_MARGIN * 2
 HEIGHT = WINDOW_PADDING_Y + HAND_AREA_HEIGHT + BOARD_PIXEL_HEIGHT + HAND_AREA_HEIGHT + WINDOW_PADDING_Y + COORD_MARGIN * 2
-
+        
 BOARD_START_X = WINDOW_PADDING_X + COORD_MARGIN
 BOARD_START_Y = WINDOW_PADDING_Y + HAND_AREA_HEIGHT + COORD_MARGIN
-
+        
 PIECE_SIZE = 60
 PIECE_OFFSET = (SQUARE - PIECE_SIZE) // 2
-BOARD_OFFSET = 2
-
+# BOARD_OFFSET was unused and removed
+    
 FPS = 60
 FONT = pygame.font.SysFont("MS Mincho", 18)
 LARGE_FONT = pygame.font.SysFont("MS Mincho", 24)
@@ -63,7 +65,7 @@ TITLE_FONT = pygame.font.SysFont("MS Mincho", 80)
 CHECK_FONT = pygame.font.SysFont("MS Mincho", 100, bold=True)
 GREETING_FONT = pygame.font.SysFont("MS Mincho", 70, bold=True)
 RESULT_FONT = pygame.font.SysFont("MS Mincho", 90, bold=True)
-
+    
 # 色の定義
 WHITE = (223, 235, 234)
 BLACK = (20, 20, 20)
@@ -79,21 +81,20 @@ TATAMI_GREEN = (140, 164, 138)
 DARK_BROWN = (50, 44, 40)
 BOARD_COLOR = (187, 155, 82)
 TITLE_COLOR = (230, 190, 130)
-
+    
 PROMOTION_ZONE = {0: range(0, 3), 1: range(6, 9)}
-
+        
 # サウンドファイルの読み込み (パス指定を修正)
-sound_start, sound_end, sound_itte, sound_katu, sound_se1, sound_think = [None] * 6
+sound_start, sound_end, sound_itte, sound_se1, sound_think = [None] * 5
 try:
     sound_start = pygame.mixer.Sound(os.path.join(sound_path, "start.mp3"))
     sound_end = pygame.mixer.Sound(os.path.join(sound_path, "end.mp3"))
     sound_itte = pygame.mixer.Sound(os.path.join(sound_path, "itte.mp3"))
-    sound_katu = pygame.mixer.Sound(os.path.join(sound_path, "katu.mp3"))
     sound_se1 = pygame.mixer.Sound(os.path.join(sound_path, "se1.mp3"))
     sound_think = pygame.mixer.Sound(os.path.join(sound_path, "think.mp3"))
 except pygame.error as e:
     print(f"サウンドファイルの読み込みに失敗しました: {e}")
-
+        
 # 画像の読み込み (パス指定を修正)
 fusuma_left_img, fusuma_right_img, start_bg_img = [None] * 3
 try:
@@ -102,35 +103,36 @@ try:
     start_bg_img = pygame.image.load(os.path.join(image_path, "board.png"))
 except pygame.error as e:
     print(f"画像ファイルの読み込みに失敗しました: {e}")
-
+    
 class Piece:
     def __init__(self, kind, owner):
         self.kind, self.owner = kind, owner
-
+        
     def clone(self):
         return Piece(self.kind, self.owner)
-
+        
     @property
     def promoted(self):
         return self.kind.endswith('+')
-
+    
     def __repr__(self):
         return f"{self.kind}{'S' if self.owner==0 else 'G'}"
-
+    
 class AnimatedPiece:
     def __init__(self, piece, x, y, owner):
         self.piece, self.x, self.y, self.owner = piece, x, y, owner
         self.vx, self.vy = random.uniform(-10, 10), random.uniform(-15, -5)
         self.angle, self.angular_velocity = 0, random.uniform(-10, 10)
         self.gravity = 0.5
-
+    
     def update(self):
+        """Update position/angle. Return True if still visible (alive), False if finished."""
         self.x += self.vx
         self.vy += self.gravity
         self.y += self.vy
         self.angle += self.angular_velocity
-        return self.y > HEIGHT + PIECE_SIZE
-
+        return self.y <= HEIGHT + PIECE_SIZE
+        
 STEP_MOVES = {
     'K': [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)],
     'G': [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (0, 1)],
@@ -164,11 +166,11 @@ PIECE_VALUES = {'K':10000,'R':500,'B':500,'G':300,'S':300,'N':200,'L':200,'P':10
                 'R+':700,'B+':700,'S+':400,'N+':300,'L+':300,'P+':200}
 TIME_SETTINGS = {"なし": None, "15分": 15*60, "30分": 30*60, "1時間": 60*60, "設定": -1}
 SUDDEN_DEATH_TIME = 45
-
+                
 def coords_to_kifu(x, y): return f"{9-x}{JAPANESE_Y_COORDS[y]}"
 def in_bounds(x,y): return 0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE
 def demote_kind(kind): return DEMOTE_MAP.get(kind, kind)
-
+        
 def standard_setup():
     board = [[None for _ in range(BOARD_SIZE)] for __ in range(BOARD_SIZE)]
     back = ['L', 'N', 'S', 'G', 'K', 'G', 'S', 'N', 'L']
@@ -183,7 +185,7 @@ def standard_setup():
     for x, k in enumerate(back):
         board[x][8] = Piece(k, 0)
     return board
-
+        
 HANDICAPS = {
     '通常': [],
     '角落ち': [('B', (1, 1))],
@@ -193,7 +195,7 @@ HANDICAPS = {
     '六枚落ち': [('R', (7, 1)), ('B', (1, 1)), ('L', (0, 0)), ('L', (8, 0)), ('N', (1, 0)), ('N', (7, 0))],
 }
 CPU_DIFFICULTIES = {'入門': 'beginner', '初級': 'easy', '中級': 'medium', '上級': 'hard', '達人': 'master'}
-
+            
 class GameState:
     def __init__(self, handicap='通常', mode='2P', cpu_difficulty='easy', time_limit=None):
         self.board = standard_setup()
@@ -381,12 +383,9 @@ def get_legal_moves_all(state, owner):
             p = state.board[x][y]
             if p and p.owner == owner:
                 all_moves.extend([(x,y,tx,ty) for tx,ty in generate_all_moves(state.board, x, y, owner)])
-    unique_hand_pieces = sorted(list(set(state.hands[owner])))
-    for kind in unique_hand_pieces:
-        try:
-            idx = state.hands[owner].index(kind)
-            all_moves.extend([(None,idx,tx,ty) for tx,ty in generate_all_moves(state.board, None, idx, owner, kind=kind)])
-        except ValueError: continue
+    # enumerate actual hand indices to preserve duplicate pieces and correct indices
+    for idx, kind in enumerate(list(state.hands[owner])):
+        all_moves.extend([(None, idx, tx, ty) for tx, ty in generate_all_moves(state.board, None, idx, owner, kind=kind)])
     return all_moves
 
 def check_mate(state):
@@ -430,39 +429,53 @@ def draw_board_programmatically(screen):
         screen.blit(kanji_text_left, (BOARD_START_X-COORD_MARGIN+5, BOARD_START_Y+i*SQUARE+(SQUARE-kanji_text_left.get_height())//2))
 
 def draw_game_elements(screen, state, piece_images):
+    # Top-level drawing flow delegated to helpers for readability
     screen.fill(TATAMI_GREEN)
-    hand_y_gote, hand_y_sente = BOARD_START_Y - COORD_MARGIN - HAND_AREA_HEIGHT, BOARD_START_Y + BOARD_PIXEL_HEIGHT + COORD_MARGIN
+    hand_y_gote = BOARD_START_Y - COORD_MARGIN - HAND_AREA_HEIGHT
+    hand_y_sente = BOARD_START_Y + BOARD_PIXEL_HEIGHT + COORD_MARGIN
     hand_x = BOARD_START_X
+    # draw hand backgrounds
     pygame.draw.rect(screen, DARK_BROWN, (hand_x, hand_y_gote, BOARD_PIXEL_WIDTH, HAND_AREA_HEIGHT))
     pygame.draw.rect(screen, DARK_BROWN, (hand_x, hand_y_sente, BOARD_PIXEL_WIDTH, HAND_AREA_HEIGHT))
     draw_board_programmatically(screen)
+
     if state.resigning_animation:
+        # animated pieces falling
+        remaining = []
         for ap in state.animated_pieces:
-            if not ap.update():
-                img = piece_images.get((ap.piece.kind, ap.owner))
-                if img:
-                    rotated_img = pygame.transform.rotate(img, ap.angle)
-                    screen.blit(rotated_img, rotated_img.get_rect(center=(ap.x, ap.y)))
-        state.animated_pieces = [ap for ap in state.animated_pieces if ap.y <= HEIGHT + PIECE_SIZE]
-        if not state.animated_pieces: state.animation_finished = True
+            alive = ap.update()
+            img = piece_images.get((ap.piece.kind, ap.owner))
+            if img and alive:
+                rotated_img = pygame.transform.rotate(img, ap.angle)
+                screen.blit(rotated_img, rotated_img.get_rect(center=(ap.x, ap.y)))
+            if alive:
+                remaining.append(ap)
+        state.animated_pieces = remaining
+        if not state.animated_pieces:
+            state.animation_finished = True
     else:
+        # selection and legal move highlights
         if state.selected:
             pygame.draw.rect(screen, BLUE, (BOARD_START_X+state.selected[0]*SQUARE, BOARD_START_Y+state.selected[1]*SQUARE, SQUARE, SQUARE), 3)
         for _,_,tx,ty in state.legal_moves:
             pygame.draw.rect(screen, RED if state.board[tx][ty] else GREEN, (BOARD_START_X+tx*SQUARE, BOARD_START_Y+ty*SQUARE, SQUARE, SQUARE), 3)
+        # draw pieces on board
         for x in range(BOARD_SIZE):
             for y in range(BOARD_SIZE):
                 p = state.board[x][y]
                 if p:
                     img = piece_images.get((p.kind, p.owner))
-                    if img: screen.blit(img, (BOARD_START_X+x*SQUARE+PIECE_OFFSET, BOARD_START_Y+y*SQUARE+PIECE_OFFSET))
+                    if img:
+                        screen.blit(img, (BOARD_START_X+x*SQUARE+PIECE_OFFSET, BOARD_START_Y+y*SQUARE+PIECE_OFFSET))
+        # draw hands and scrollbars
         max_visible_hand = BOARD_PIXEL_WIDTH // SQUARE
         for owner in [0, 1]:
             hand, offset = state.hands[owner], state.hand_scroll_offset[owner]
             hand_y = hand_y_sente if owner == 0 else hand_y_gote
             for i, p_kind in enumerate(hand[offset:offset+max_visible_hand]):
                 img = piece_images.get((p_kind, owner))
-                if img: screen.blit(img, (hand_x+i*SQUARE+PIECE_OFFSET, hand_y+PIECE_OFFSET))
+                if img:
+                    screen.blit(img, (hand_x+i*SQUARE+PIECE_OFFSET, hand_y+PIECE_OFFSET))
             if len(hand) > max_visible_hand:
                 scrollbar_width = BOARD_PIXEL_WIDTH * (max_visible_hand / len(hand))
                 scroll_ratio = offset / (len(hand)-max_visible_hand) if (len(hand)-max_visible_hand) > 0 else 0
@@ -470,27 +483,31 @@ def draw_game_elements(screen, state, piece_images):
                 rect = pygame.Rect(scrollbar_x, hand_y+HAND_AREA_HEIGHT-5, scrollbar_width, 5)
                 pygame.draw.rect(screen, LIGHT_GRAY, rect)
                 state.hand_scrollbar_rect[owner] = rect
-            else: state.hand_scrollbar_rect[owner] = None
-    if state.selected_hand is not None:
-        owner, offset = state.turn, state.hand_scroll_offset[state.turn]
-        display_idx = state.selected_hand - offset
-        if 0 <= display_idx < max_visible_hand:
-            hand_y = hand_y_sente if owner==0 else hand_y_gote
-            pygame.draw.rect(screen, BLUE, (hand_x+display_idx*SQUARE, hand_y, SQUARE, SQUARE), 3)
+            else:
+                state.hand_scrollbar_rect[owner] = None
+
+        if state.selected_hand is not None:
+            owner, offset = state.turn, state.hand_scroll_offset[state.turn]
+            display_idx = state.selected_hand - offset
+            if 0 <= display_idx < max_visible_hand:
+                hand_y = hand_y_sente if owner==0 else hand_y_gote
+                pygame.draw.rect(screen, BLUE, (hand_x+display_idx*SQUARE, hand_y, SQUARE, SQUARE), 3)
+
     draw_kifu(screen, state)
-    
+
     if state.check_display_time > 0 and time.time() - state.check_display_time < 1.5:
         check_text = CHECK_FONT.render("王手", True, RED)
         text_rect = check_text.get_rect(center=(BOARD_START_X + BOARD_PIXEL_WIDTH//2, BOARD_START_Y + BOARD_PIXEL_HEIGHT//2))
         shadow_text = CHECK_FONT.render("王手", True, BLACK)
         screen.blit(shadow_text, (text_rect.x + 3, text_rect.y + 3))
         screen.blit(check_text, text_rect)
-    else: state.check_display_time = 0
+    else:
+        state.check_display_time = 0
 
     if state.saved_message_time and time.time() - state.saved_message_time < 2:
         saved_text = LARGE_FONT.render("棋譜を保存しました！", True, BUTTON_BLUE)
         screen.blit(saved_text, saved_text.get_rect(center=(WIDTH//2, HEIGHT//2-200)))
-    
+
     pygame.display.flip()
 
 def draw_kifu(screen, state):
@@ -536,20 +553,23 @@ def draw_kifu(screen, state):
 
     resign_button_y = HEIGHT-WINDOW_PADDING_Y-RESIGN_BUTTON_HEIGHT-10
     button_x = kifu_area_x+(KIFU_WINDOW_WIDTH-260)/2
-    state.resign_button_rect=pygame.Rect(button_x, resign_button_y, 260, RESIGN_BUTTON_HEIGHT)
-    pygame.draw.rect(screen, RED, state.resign_button_rect,0,10)
-    screen.blit(LARGE_FONT.render("投了", True, WHITE), LARGE_FONT.render("投了", True, WHITE).get_rect(center=state.resign_button_rect.center))
+    state.resign_button_rect = pygame.Rect(button_x, resign_button_y, 260, RESIGN_BUTTON_HEIGHT)
+    pygame.draw.rect(screen, RED, state.resign_button_rect, 0, 10)
+    resign_surf = LARGE_FONT.render("投了", True, WHITE)
+    screen.blit(resign_surf, resign_surf.get_rect(center=state.resign_button_rect.center))
 
     save_button_y = resign_button_y - SAVE_BUTTON_HEIGHT - 10
-    state.save_button_rect=pygame.Rect(button_x, save_button_y, 260, SAVE_BUTTON_HEIGHT)
-    pygame.draw.rect(screen, BUTTON_BLUE, state.save_button_rect,0,10)
-    screen.blit(LARGE_FONT.render("棋譜を保存", True, WHITE), LARGE_FONT.render("棋譜を保存", True, WHITE).get_rect(center=state.save_button_rect.center))
+    state.save_button_rect = pygame.Rect(button_x, save_button_y, 260, SAVE_BUTTON_HEIGHT)
+    pygame.draw.rect(screen, BUTTON_BLUE, state.save_button_rect, 0, 10)
+    save_surf = LARGE_FONT.render("棋譜を保存", True, WHITE)
+    screen.blit(save_surf, save_surf.get_rect(center=state.save_button_rect.center))
     
     matta_button_y = save_button_y - MATTA_BUTTON_HEIGHT - 10
-    state.matta_button_rect=pygame.Rect(button_x, matta_button_y, 260, MATTA_BUTTON_HEIGHT)
+    state.matta_button_rect = pygame.Rect(button_x, matta_button_y, 260, MATTA_BUTTON_HEIGHT)
     color = ORANGE if len(state.history) > 0 else LIGHT_GRAY
-    pygame.draw.rect(screen, color, state.matta_button_rect,0,10)
-    screen.blit(LARGE_FONT.render("待った", True, WHITE), LARGE_FONT.render("待った", True, WHITE).get_rect(center=state.matta_button_rect.center))
+    pygame.draw.rect(screen, color, state.matta_button_rect, 0, 10)
+    matta_surf = LARGE_FONT.render("待った", True, WHITE)
+    screen.blit(matta_surf, matta_surf.get_rect(center=state.matta_button_rect.center))
 
     if state.time_limit:
         timer_button_y = matta_button_y - TIMER_BUTTON_HEIGHT - 10
