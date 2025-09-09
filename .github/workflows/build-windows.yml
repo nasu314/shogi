@@ -19,7 +19,7 @@ jobs:
           pip install pyinstaller
       - name: Build exe with PyInstaller
         shell: pwsh
-        run: pyinstaller --onefile --noconsole --add-data "assets;assets" shogigame.py
+        run: python -m PyInstaller --onefile --noconsole --add-data 'assets;assets' shogigame.py
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
