@@ -5,13 +5,14 @@ import time
 import random
 import csv
 import os
+from typing import List, Tuple, Dict, Optional, Iterable, Any, Callable, TypeAlias
 
 # --- パス設定 ---
 # スクリプト自身の場所を基準にする
-try:
-    # PyInstallerでexe化した場合
-    base_path = sys._MEIPASS
-except AttributeError:
+if hasattr(sys, "_MEIPASS"):
+    # PyInstaller 展開ディレクトリ (mypy: 動的属性) 
+    base_path = getattr(sys, "_MEIPASS")  # type: ignore[attr-defined]
+else:
     base_path = os.path.dirname(os.path.abspath(__file__))
 
 # 画像と音声フォルダへのパスを作成
@@ -56,27 +57,35 @@ BOARD_START_Y = WINDOW_PADDING_Y + HAND_AREA_HEIGHT + COORD_MARGIN
 PIECE_SIZE = 60
 PIECE_OFFSET = (SQUARE - PIECE_SIZE) // 2
 FPS = 60
-try:
-    FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 18)
-    LARGE_FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 24)
-    MONO_FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 14)
-    TITLE_FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 80)
-    CHECK_FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 100)
-    GREETING_FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 70)
-    RESULT_FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 90)
-    # set bold where it was previously requested
-    CHECK_FONT.set_bold(True)
-    GREETING_FONT.set_bold(True)
-    RESULT_FONT.set_bold(True)
-except Exception:
-    # fallback to system fonts if the TTF cannot be loaded
-    FONT = pygame.font.SysFont("MS Mincho", 18)
-    LARGE_FONT = pygame.font.SysFont("MS Mincho", 24)
-    MONO_FONT = pygame.font.SysFont("MS Mincho", 14)
-    TITLE_FONT = pygame.font.SysFont("MS Mincho", 80)
-    CHECK_FONT = pygame.font.SysFont("MS Mincho", 100, bold=True)
-    GREETING_FONT = pygame.font.SysFont("MS Mincho", 70, bold=True)
-    RESULT_FONT = pygame.font.SysFont("MS Mincho", 90, bold=True)
+def _load_fonts() -> Tuple[pygame.font.Font, pygame.font.Font, pygame.font.Font, pygame.font.Font, pygame.font.Font, pygame.font.Font, pygame.font.Font]:
+    try:
+        font_path = os.path.join(assets_path, "MPLUS1p-Regular.ttf")
+        font = pygame.font.Font(font_path, 18)
+        large = pygame.font.Font(font_path, 24)
+        mono = pygame.font.Font(font_path, 14)
+        title = pygame.font.Font(font_path, 80)
+        check = pygame.font.Font(font_path, 100)
+        greeting = pygame.font.Font(font_path, 70)
+        result = pygame.font.Font(font_path, 90)
+        check.set_bold(True)
+        greeting.set_bold(True)
+        result.set_bold(True)
+        return font, large, mono, title, check, greeting, result
+    except Exception:
+        # System fallback
+        font = pygame.font.SysFont("MS Mincho", 18)
+        large = pygame.font.SysFont("MS Mincho", 24)
+        mono = pygame.font.SysFont("MS Mincho", 14)
+        title = pygame.font.SysFont("MS Mincho", 80)
+        check = pygame.font.SysFont("MS Mincho", 100, bold=True)
+        greeting = pygame.font.SysFont("MS Mincho", 70, bold=True)
+        result = pygame.font.SysFont("MS Mincho", 90, bold=True)
+        return font, large, mono, title, check, greeting, result
+
+FONT, LARGE_FONT, MONO_FONT, TITLE_FONT, CHECK_FONT, GREETING_FONT, RESULT_FONT = _load_fonts()
+
+# 型エイリアス
+Board: TypeAlias = "List[List[Optional[Piece]]]"  # 前方参照的利用のため文字列で
 
 # 色の定義
 WHITE = (223, 235, 234)
@@ -119,30 +128,30 @@ except pygame.error as e:
 class Piece:
     """軽量な駒表現 (__slots__ でオブジェクト生成・GC負荷を削減)。"""
     __slots__ = ("kind", "owner")
-    def __init__(self, kind, owner):
+    def __init__(self, kind: str, owner: int):
         self.kind = kind
         self.owner = owner
 
-    def clone(self):
+    def clone(self) -> 'Piece':
         # clone が多用される箇所は最適化で極力排除するが、互換性のため残す
         return Piece(self.kind, self.owner)
 
     @property
-    def promoted(self):
+    def promoted(self) -> bool:
         return self.kind.endswith('+')
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"{self.kind}{'S' if self.owner==0 else 'G'}"
 
 class AnimatedPiece:
     __slots__ = ("piece","x","y","owner","vx","vy","angle","angular_velocity","gravity")
-    def __init__(self, piece, x, y, owner):
+    def __init__(self, piece: Piece, x: float, y: float, owner: int):
         self.piece, self.x, self.y, self.owner = piece, x, y, owner
         self.vx, self.vy = random.uniform(-10, 10), random.uniform(-15, -5)
         self.angle, self.angular_velocity = 0, random.uniform(-10, 10)
         self.gravity = 0.5
 
-    def update(self):
+    def update(self) -> bool:
         self.x += self.vx
         self.vy += self.gravity
         self.y += self.vy
@@ -183,50 +192,53 @@ ZEN_TO_HAN_TABLE = str.maketrans(ZENKAKU_NUM, HANKAKU_NUM)
 JAPANESE_TURN_SYMBOL = {0:'▲', 1:'△'}
 JAPANESE_TURN_NAME = {0:'先手', 1:'後手'}
 VICTORY_MESSAGE = {0: '学生軍の勝利', 1: '教員軍の勝利'}
-PIECE_VALUES = {'K':10000,'R':500,'B':500,'G':300,'S':300,'N':200,'L':200,'P':100,
+PIECE_VALUES: Dict[str,int] = {'K':10000,'R':500,'B':500,'G':300,'S':300,'N':200,'L':200,'P':100,
                 'R+':700,'B+':700,'S+':400,'N+':300,'L+':300,'P+':200}
-TIME_SETTINGS = {"なし": None, "15分": 15*60, "30分": 30*60, "1時間": 60*60, "設定": -1}
+TIME_SETTINGS: Dict[str, Optional[int]] = {"なし": None, "15分": 15*60, "30分": 30*60, "1時間": 60*60, "設定": -1}
 SUDDEN_DEATH_TIME = 45
 
-def coords_to_kifu(x, y): return f"{9-x}{JAPANESE_Y_COORDS[y]}"
-def in_bounds(x,y): return 0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE
-def demote_kind(kind): return DEMOTE_MAP.get(kind, kind)
+def coords_to_kifu(x: int, y: int) -> str: return f"{9-x}{JAPANESE_Y_COORDS[y]}"
+def in_bounds(x: int, y: int) -> bool: return 0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE
+def demote_kind(kind: str) -> str: return DEMOTE_MAP.get(kind, kind)
 
 # Helper utilities for move generation extracted to module scope to reduce function complexity
-def _sign_for_owner(owner):
+def _sign_for_owner(owner: int) -> int:
     return 1 if owner == 0 else -1
 
-def _add_step_moves(board, x, y, owner, kind_key, moves):
+def _add_step_moves(board: List[List[Optional[Piece]]], x: int, y: int, owner: int, kind_key: str, moves: List[Tuple[int,int]]) -> None:
     for dx, dy in STEP_MOVES.get(kind_key, []):
         actual_dy = dy * _sign_for_owner(owner)
         nx, ny = x + dx, y + actual_dy
-        if in_bounds(nx, ny) and (not board[nx][ny] or board[nx][ny].owner != owner):
+        if not in_bounds(nx, ny):
+            continue
+        target = board[nx][ny]
+        if target is None or target.owner != owner:
             moves.append((nx, ny))
 
-def _add_slider_moves(board, x, y, owner, dirs, moves):
+def _add_slider_moves(board: List[List[Optional[Piece]]], x: int, y: int, owner: int, dirs: Iterable[Tuple[int,int]], moves: List[Tuple[int,int]]) -> None:
     for dx, dy in dirs:
         actual_dy = dy * _sign_for_owner(owner)
         nx, ny = x + dx, y + actual_dy
         while in_bounds(nx, ny):
-            if not board[nx][ny]:
+            target = board[nx][ny]
+            if target is None:
                 moves.append((nx, ny))
-            elif board[nx][ny].owner != owner:
-                moves.append((nx, ny))
-                break
             else:
+                if target.owner != owner:
+                    moves.append((nx, ny))
                 break
             nx, ny = nx + dx, ny + actual_dy
 
-def _generate_drop_moves(board, p_kind, p_owner):
+def _generate_drop_moves(board: List[List[Optional[Piece]]], p_kind: str, p_owner: int) -> List[Tuple[int,int]]:
     """Generate legal drop destinations for a piece kind (used when x is None)."""
-    moves = []
+    moves: List[Tuple[int,int]] = []
     for nx in range(BOARD_SIZE):
         for ny in range(BOARD_SIZE):
             if _is_valid_drop(board, p_kind, p_owner, nx, ny):
                 moves.append((nx, ny))
     return moves
 
-def _is_valid_drop(board, p_kind, p_owner, nx, ny):
+def _is_valid_drop(board: List[List[Optional[Piece]]], p_kind: str, p_owner: int, nx: int, ny: int) -> bool:
     """Return True if dropping p_kind by p_owner at (nx,ny) is allowed."""
     if board[nx][ny]:
         return False
@@ -238,10 +250,14 @@ def _is_valid_drop(board, p_kind, p_owner, nx, ny):
         return False
     return True
 
-def _has_pawn_in_file(board, file_x, owner):
-    return any(board[file_x][i] and board[file_x][i].kind == 'P' and board[file_x][i].owner == owner for i in range(BOARD_SIZE))
+def _has_pawn_in_file(board: List[List[Optional[Piece]]], file_x: int, owner: int) -> bool:
+    for i in range(BOARD_SIZE):
+        piece = board[file_x][i]
+        if piece is not None and piece.kind == 'P' and piece.owner == owner:
+            return True
+    return False
 
-def _drop_into_forbidden_rank(p_kind, owner, ny):
+def _drop_into_forbidden_rank(p_kind: str, owner: int, ny: int) -> bool:
     # forbidden ranks for pawn/knight/kyosha drops
     if p_kind in ['P', 'L']:
         return (owner == 0 and ny == 0) or (owner == 1 and ny == 8)
@@ -249,20 +265,21 @@ def _drop_into_forbidden_rank(p_kind, owner, ny):
         return (owner == 0 and ny <= 1) or (owner == 1 and ny >= 7)
     return False
 
-def _pawn_drop_would_result_in_checkmate(board, nx, ny, p_owner):
+def _pawn_drop_would_result_in_checkmate(board: List[List[Optional[Piece]]], nx: int, ny: int, p_owner: int) -> bool:
     temp_board = deepcopy(board)
     temp_board[nx][ny] = Piece('P', p_owner)
     if not is_in_check(temp_board, 1 - p_owner):
         return False
-    opponent_has_legal_move = any(
-        generate_all_moves(temp_board, opp_x, opp_y, 1 - p_owner)
-        for opp_x in range(BOARD_SIZE)
-        for opp_y in range(BOARD_SIZE)
-        if temp_board[opp_x][opp_y] and temp_board[opp_x][opp_y].owner == 1 - p_owner
-    )
-    return not opponent_has_legal_move
+    # 相手に一手でも合法手があれば詰みではない
+    for opp_x in range(BOARD_SIZE):
+        for opp_y in range(BOARD_SIZE):
+            opp_piece = temp_board[opp_x][opp_y]
+            if opp_piece is not None and opp_piece.owner == 1 - p_owner:
+                if generate_all_moves(temp_board, opp_x, opp_y, 1 - p_owner):
+                    return False
+    return True
 
-def _generate_promoted_moves(board, x, y, p):
+def _generate_promoted_moves(board: List[List[Optional[Piece]]], x: int, y: int, p: Piece) -> List[Tuple[int,int]]:
     """Generate moves for promoted R/B (they have step moves + base sliders)."""
     moves = []
     _add_step_moves(board, x, y, p.owner, p.kind, moves)
@@ -438,24 +455,23 @@ def is_in_check(board, owner):
                         return True
     return False
 
-def generate_all_moves_no_check(board, x, y, owner, kind=None):
-    moves = []
+def generate_all_moves_no_check(board: List[List[Optional[Piece]]], x: Optional[int], y: int, owner: int, kind: Optional[str]=None) -> List[Tuple[int,int]]:
+    moves: List[Tuple[int,int]] = []
     if x is None:
-        # delegate drop-generation rules to helper
+        # 手駒打ち
+        if kind is None:
+            return []
         return _generate_drop_moves(board, kind, owner)
-
     p = board[x][y]
-    if not p:
+    if p is None:
         return []
-    # Use module-level helpers for step and slider move generation
     if p.kind in ['B+', 'R+']:
         return _generate_promoted_moves(board, x, y, p)
-    else:
-        if p.kind in STEP_MOVES:
-            _add_step_moves(board, x, y, p.owner, p.kind, moves)
-        dirs = SLIDER_DIRS.get(p.kind)
-        if dirs:
-            _add_slider_moves(board, x, y, p.owner, dirs, moves)
+    if p.kind in STEP_MOVES:
+        _add_step_moves(board, x, y, p.owner, p.kind, moves)
+    dirs = SLIDER_DIRS.get(p.kind)
+    if dirs:
+        _add_slider_moves(board, x, y, p.owner, dirs, moves)
     return moves
 
 def generate_all_moves(board, x, y, owner, kind=None, check_rule=True):
