@@ -288,13 +288,35 @@ def standard_setup():
         board[x][8] = Piece(k, 0)
     return board
 
+def handicap_setup(remove_kinds):
+    """指定された種類(kind)の駒を後手(上手 side=1)から取り除く位置リストを返す。
+    remove_kinds: 取り除きたい駒のリスト ['R','B',...] のような形式。
+    戻り値: [(x,y), ...]
+    """
+    positions = []
+    temp = standard_setup()
+    # 指定の種類ごとに盤を走査し最初に見つかった後手駒を除去対象とする
+    for kind in remove_kinds:
+        found = False
+        for x in range(BOARD_SIZE):
+            for y in range(BOARD_SIZE):
+                p = temp[x][y]
+                if p and p.owner == 1 and p.kind == kind:
+                    positions.append((x, y))
+                    temp[x][y] = None
+                    found = True
+                    break
+            if found:
+                break
+    return positions
+
 HANDICAPS = {
-    '平手': standard_setup,
-    '香落ち': lambda: handicap_setup({ 'L': 0 }),
-    '角落ち': lambda: handicap_setup({ 'B': 0 }),
-    '飛車落ち': lambda: handicap_setup({ 'R': 0 }),
-    '飛香落ち': lambda: handicap_setup({ 'R': 0, 'L': 0 }),
-    '二枚落ち': lambda: handicap_setup({ 'R': 0, 'B': 0 }),
+    '平手': lambda: [],
+    '香落ち': lambda: handicap_setup(['L']),
+    '角落ち': lambda: handicap_setup(['B']),
+    '飛車落ち': lambda: handicap_setup(['R']),
+    '飛香落ち': lambda: handicap_setup(['R','L']),
+    '二枚落ち': lambda: handicap_setup(['R','B']),
 }
 
 # Piece-square tables (owner=0 perspective)
@@ -327,10 +349,11 @@ def _pst(kind, y_from_owner0):
 CPU_DIFFICULTIES = {'入門': 'beginner', '初級': 'easy', '中級': 'medium', '上級': 'hard', '達人': 'master'}
 
 class GameState:
-    def __init__(self, handicap='通常', mode='2P', cpu_difficulty='easy', time_limit=None):
+    def __init__(self, handicap='平手', mode='2P', cpu_difficulty='easy', time_limit=None):
         self.board = standard_setup()
-        for _, pos in HANDICAPS.get(handicap, []):
-            self.board[pos[0]][pos[1]] = None
+        if handicap in HANDICAPS:
+            for pos in HANDICAPS[handicap]():
+                self.board[pos[0]][pos[1]] = None
 
         self.hands = {0: [], 1: []}
         self.turn = 0
@@ -443,16 +466,93 @@ def generate_all_moves(board, x, y, owner, kind=None, check_rule=True):
     return valid_moves
 
 def get_legal_moves_all(state, owner):
+    """汎用(遅い)合法手生成。探索時は fast_mode を使う。"""
+    # 探索中は高速版を優先
+    if getattr(state, 'fast_mode', False):
+        return get_legal_moves_all_fast(state, owner)
     all_moves = []
+    board = state.board
     for x in range(BOARD_SIZE):
+        col = board[x]
         for y in range(BOARD_SIZE):
-            p = state.board[x][y]
+            p = col[y]
             if p and p.owner == owner:
-                all_moves.extend([(x,y,tx,ty) for tx,ty in generate_all_moves(state.board, x, y, owner)])
-    # enumerate actual hand indices to preserve duplicate pieces and correct indices
+                all_moves.extend([(x, y, tx, ty) for tx, ty in generate_all_moves(board, x, y, owner)])
     for idx, kind in enumerate(list(state.hands[owner])):
-        all_moves.extend([(None, idx, tx, ty) for tx, ty in generate_all_moves(state.board, None, idx, owner, kind=kind)])
+        all_moves.extend([(None, idx, tx, ty) for tx, ty in generate_all_moves(board, None, idx, owner, kind=kind)])
     return all_moves
+
+# ----------------------
+# 高速探索用 合法手生成
+# ----------------------
+def _pseudo_moves_for_piece(board, x, y, owner, piece):
+    """盤上駒の擬似(王手放置考慮なし)移動先を列挙。"""
+    if piece.kind in ['B+', 'R+']:
+        return _generate_promoted_moves(board, x, y, piece)
+    moves = []
+    if piece.kind in STEP_MOVES:
+        _add_step_moves(board, x, y, owner, piece.kind, moves)
+    dirs = SLIDER_DIRS.get(piece.kind)
+    if dirs:
+        _add_slider_moves(board, x, y, owner, dirs, moves)
+    return moves
+
+def get_legal_moves_all_fast(state, owner):
+    """deepcopy を使わず make/unmake せずに簡易シミュレーションで合法手判定。
+    - 王手放置判定は最小限の盤操作で実施
+    - optional 成りは常に『成る』として扱い (CPU の方針に合わせる)
+    - 精度より速度優先 (例: 不成でのみ合法な手は探索では現れない前提)
+    """
+    board = state.board
+    legal = []
+    # 盤上駒
+    for x in range(BOARD_SIZE):
+        col = board[x]
+        for y in range(BOARD_SIZE):
+            p = col[y]
+            if not p or p.owner != owner:
+                continue
+            pmoves = _pseudo_moves_for_piece(board, x, y, owner, p)
+            for tx, ty in pmoves:
+                src_piece = p
+                tgt_piece = board[tx][ty]
+                # 成り処理(必須/任意)を仮適用
+                original_kind = src_piece.kind
+                promoted = False
+                if (not src_piece.promoted) and src_piece.kind in PROMOTE_MAP:
+                    if _must_promote(src_piece.kind, owner, ty) or _can_promote(src_piece.kind, owner, y, ty):
+                        src_piece.kind = PROMOTE_MAP[src_piece.kind]
+                        promoted = True
+                # 仮移動
+                board[tx][ty] = src_piece
+                board[x][y] = None
+                illegal = is_in_check(board, owner)
+                # 差し戻し
+                board[x][y] = src_piece
+                board[tx][ty] = tgt_piece
+                if promoted:
+                    src_piece.kind = original_kind
+                if not illegal:
+                    legal.append((x, y, tx, ty))
+    # 打つ手 (チェック時にも対応するためチェック解消か確認)
+    hand_list = state.hands[owner]
+    for idx, kind in enumerate(hand_list):
+        # 既存ルールでドロップ可能か (二歩/行き所の無い駒 等)
+        # _is_valid_drop の pawn-drop-mate チェックは deepcopy を含むが
+        # 手数の少ない打ち駒なので許容 (ボトルネックは移動手)
+        drop_targets = []
+        for nx in range(BOARD_SIZE):
+            for ny in range(BOARD_SIZE):
+                if _is_valid_drop(board, kind, owner, nx, ny):
+                    drop_targets.append((nx, ny))
+        for tx, ty in drop_targets:
+            board[tx][ty] = Piece(kind, owner)
+            illegal = is_in_check(board, owner)
+            board[tx][ty] = None
+            if not illegal:
+                legal.append((None, idx, tx, ty))
+    # 王手でない場合 in_check_now は未使用だが分岐保持 (将来拡張余地)
+    return legal
 
 def check_mate(state):
     # If the king for the side to move is missing (captured), treat as mate/game over
@@ -1282,6 +1382,8 @@ def alpha_beta_search(state, depth, alpha, beta, maximizing_player, owner, ply, 
 def iterative_deepening_best_move(state, max_depth, time_limit_ms):
     # 初期 zobrist
     recompute_zobrist(state)
+    # 探索高速化モード ON
+    state.fast_mode = True
     ctx = SearchContext(time_limit_ms)
     best_move = None
     best_value = -INF
@@ -1295,6 +1397,7 @@ def iterative_deepening_best_move(state, max_depth, time_limit_ms):
         if ctx.timeout:
             break
     state._last_search_value = best_value  # type: ignore[attr-defined]
+    state.fast_mode = False
     return best_move
 
 def get_cpu_move_hard(state):
@@ -1336,8 +1439,8 @@ def apply_move(state, move, is_cpu=False, screen=None, force_promotion=None, upd
                 else: promo = True
             if promo: piece.kind = PROMOTE_MAP[piece.kind]; kifu_text += "成"
             elif can: kifu_text += "不成"
-        if captured:
-            state.hands[state.turn].append(demote_kind(captured.kind)); state.hands[state.turn].sort()
+            if captured:
+                state.hands[state.turn].append(demote_kind(captured.kind))  # 並べ替え不要
         state.board[tx][ty], state.board[sx][sy_or_idx] = piece, None
         state.selected, state.legal_moves = None, []
     else:
@@ -1465,14 +1568,14 @@ def main(initial_settings=None, skip_start=False):
     # If initial_settings provided and skip_start True, start a fresh game with those settings
     if initial_settings and skip_start:
         game_mode = initial_settings.get('mode', '2P')
-        handicap = initial_settings.get('handicap', '通常')
+        handicap = initial_settings.get('handicap', '平手')
         cpu_diff = initial_settings.get('cpu_diff', 'easy')
         time_limit = initial_settings.get('time_limit', None)
         # Always start fresh (do not load previous kifu)
         state = GameState(handicap, game_mode, cpu_diff, time_limit)
     else:
         game_mode = start_screen(screen)
-        handicap, cpu_diff, time_limit = '通常', 'easy', None
+        handicap, cpu_diff, time_limit = '平手', 'easy', None
         if game_mode == '2P':
             handicap = selection_screen(screen, "ハンディキャップを選択", HANDICAPS.keys())
             time_choice = selection_screen(screen, "持ち時間モードを選択", TIME_SETTINGS.keys())
