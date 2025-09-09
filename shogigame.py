@@ -170,6 +170,70 @@ SUDDEN_DEATH_TIME = 45
 def coords_to_kifu(x, y): return f"{9-x}{JAPANESE_Y_COORDS[y]}"
 def in_bounds(x,y): return 0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE
 def demote_kind(kind): return DEMOTE_MAP.get(kind, kind)
+
+# Helper utilities for move generation extracted to module scope to reduce function complexity
+def _sign_for_owner(owner):
+    return 1 if owner == 0 else -1
+
+def _add_step_moves(board, x, y, owner, kind_key, moves):
+    for dx, dy in STEP_MOVES.get(kind_key, []):
+        actual_dy = dy * _sign_for_owner(owner)
+        nx, ny = x + dx, y + actual_dy
+        if in_bounds(nx, ny) and (not board[nx][ny] or board[nx][ny].owner != owner):
+            moves.append((nx, ny))
+
+def _add_slider_moves(board, x, y, owner, dirs, moves):
+    for dx, dy in dirs:
+        actual_dy = dy * _sign_for_owner(owner)
+        nx, ny = x + dx, y + actual_dy
+        while in_bounds(nx, ny):
+            if not board[nx][ny]:
+                moves.append((nx, ny))
+            elif board[nx][ny].owner != owner:
+                moves.append((nx, ny))
+                break
+            else:
+                break
+            nx, ny = nx + dx, ny + actual_dy
+
+def _generate_drop_moves(board, p_kind, p_owner):
+    """Generate legal drop destinations for a piece kind (used when x is None)."""
+    moves = []
+    for nx in range(BOARD_SIZE):
+        for ny in range(BOARD_SIZE):
+            if not board[nx][ny]:
+                # pawn drop rules
+                if p_kind == 'P' and any(board[nx][i] and board[nx][i].kind == 'P' and board[nx][i].owner == p_owner for i in range(BOARD_SIZE)):
+                    continue
+                if (p_kind in ['P', 'L'] and ((p_owner == 0 and ny == 0) or (p_owner == 1 and ny == 8))):
+                    continue
+                if (p_kind == 'N' and ((p_owner == 0 and ny <= 1) or (p_owner == 1 and ny >= 7))):
+                    continue
+                if p_kind == 'P':
+                    temp_board = deepcopy(board)
+                    temp_board[nx][ny] = Piece('P', p_owner)
+                    if is_in_check(temp_board, 1 - p_owner):
+                        opponent_has_legal_move = any(
+                            generate_all_moves(temp_board, opp_x, opp_y, 1 - p_owner)
+                            for opp_x in range(BOARD_SIZE)
+                            for opp_y in range(BOARD_SIZE)
+                            if temp_board[opp_x][opp_y] and temp_board[opp_x][opp_y].owner == 1 - p_owner
+                        )
+                        if not opponent_has_legal_move:
+                            continue
+                moves.append((nx, ny))
+    return moves
+
+def _generate_promoted_moves(board, x, y, p):
+    """Generate moves for promoted R/B (they have step moves + base sliders)."""
+    moves = []
+    _add_step_moves(board, x, y, p.owner, p.kind, moves)
+    base_kind = demote_kind(p.kind)
+    if base_kind == 'R':
+        _add_slider_moves(board, x, y, p.owner, [(0, -1), (0, 1), (-1, 0), (1, 0)], moves)
+    elif base_kind == 'B':
+        _add_slider_moves(board, x, y, p.owner, [(-1, -1), (-1, 1), (1, -1), (1, 1)], moves)
+    return moves
         
 def standard_setup():
     board = [[None for _ in range(BOARD_SIZE)] for __ in range(BOARD_SIZE)]
@@ -313,54 +377,24 @@ def generate_all_moves_no_check(board, x, y, owner, kind=None):
     p = board[x][y]
     if not p:
         return []
+    # Use module-level helpers for step and slider move generation
     if p.kind in ['B+', 'R+']:
-        for dx, dy in STEP_MOVES[p.kind]:
-            nx, ny = x + dx, y + dy
-            if in_bounds(nx, ny) and (not board[nx][ny] or board[nx][ny].owner != p.owner):
-                moves.append((nx, ny))
+        _add_step_moves(board, x, y, p.owner, p.kind, moves)
         base_kind = demote_kind(p.kind)
-        slider_dirs = []
         if base_kind == 'R':
-            slider_dirs = [(0, -1), (0, 1), (-1, 0), (1, 0)]
+            _add_slider_moves(board, x, y, p.owner, [(0, -1), (0, 1), (-1, 0), (1, 0)], moves)
         elif base_kind == 'B':
-            slider_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
-        for dx, dy in slider_dirs:
-            nx, ny = x + dx, y + dy
-            while in_bounds(nx, ny):
-                if not board[nx][ny]:
-                    moves.append((nx, ny))
-                elif board[nx][ny].owner != p.owner:
-                    moves.append((nx, ny))
-                    break
-                else:
-                    break
-                nx, ny = nx + dx, ny + dy
-    elif p.kind in STEP_MOVES:
-        for dx, dy in STEP_MOVES[p.kind]:
-            actual_dy = dy * (1 if p.owner == 0 else -1)
-            nx, ny = x + dx, y + actual_dy
-            if in_bounds(nx, ny) and (not board[nx][ny] or board[nx][ny].owner != p.owner):
-                moves.append((nx, ny))
-    if p.kind in SLIDERS:
-        dirs = []
-        if p.kind == 'R':
-            dirs = [(0, -1), (0, 1), (-1, 0), (1, 0)]
-        elif p.kind == 'B':
-            dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
-        elif p.kind == 'L':
-            dirs = [(0, -1)]
-        for dx, dy in dirs:
-            actual_dy = dy * (1 if p.owner == 0 else -1)
-            nx, ny = x + dx, y + actual_dy
-            while in_bounds(nx, ny):
-                if not board[nx][ny]:
-                    moves.append((nx, ny))
-                elif board[nx][ny].owner != p.owner:
-                    moves.append((nx, ny))
-                    break
-                else:
-                    break
-                nx, ny = nx + dx, ny + actual_dy
+            _add_slider_moves(board, x, y, p.owner, [(-1, -1), (-1, 1), (1, -1), (1, 1)], moves)
+    else:
+        if p.kind in STEP_MOVES:
+            _add_step_moves(board, x, y, p.owner, p.kind, moves)
+        if p.kind in SLIDERS:
+            if p.kind == 'R':
+                _add_slider_moves(board, x, y, p.owner, [(0, -1), (0, 1), (-1, 0), (1, 0)], moves)
+            elif p.kind == 'B':
+                _add_slider_moves(board, x, y, p.owner, [(-1, -1), (-1, 1), (1, -1), (1, 1)], moves)
+            elif p.kind == 'L':
+                _add_slider_moves(board, x, y, p.owner, [(0, -1)], moves)
     return moves
 
 def generate_all_moves(board, x, y, owner, kind=None, check_rule=True):
