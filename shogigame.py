@@ -385,6 +385,12 @@ class GameState:
         self.check_display_time = 0
         self.checkmate_display_time = 0
         self.history = []
+        # タイマー表示キャッシュ (UI 再描画の度に時間計算しない)
+        self.timer_display_cache = {
+            'sente': '00:00:00',
+            'gote': '00:00:00',
+            'last_update': 0.0
+        }
 
     def save_history(self):
         history_item = {
@@ -697,18 +703,9 @@ def draw_kifu(screen, state):
     draw_kifu_buttons(screen, state, kifu_area_x)
 
 def draw_kifu_info(screen, state, kifu_area_x, kifu_area_y):
-    sente_t, gote_t = state.sente_time, state.gote_time
-    if not state.timer_paused and not state.game_over:
-        elapsed = time.time() - state.last_move_time
-        if state.time_limit is not None:
-            if state.turn == 0: sente_t = max(0, state.sente_time - elapsed)
-            else: gote_t = max(0, state.gote_time - elapsed)
-        else:
-            if state.turn == 0: sente_t += elapsed
-            else: gote_t += elapsed
-
-    sente_time_str = time.strftime('%H:%M:%S', time.gmtime(sente_t))
-    gote_time_str = time.strftime('%H:%M:%S', time.gmtime(gote_t))
+    _maybe_update_timer_display_cache(state)
+    sente_time_str = state.timer_display_cache['sente']
+    gote_time_str = state.timer_display_cache['gote']
     info_texts = [f"手数: {len(state.kifu)}", f"手番: {JAPANESE_TURN_NAME[state.turn]}",
                   f"▲先手: {sente_time_str}", f"△後手: {gote_time_str}"]
     for i, text in enumerate(info_texts):
@@ -931,66 +928,142 @@ def ask_continue_screen(screen):
         screen.blit(text,text.get_rect(center=buttons['continue']['rect'].center))
         pygame.display.flip(); clock.tick(FPS)
 
-def evaluate_board(state, owner):
-    material = positional = mobility = king_safety = 0
-    king_pos = {0: None, 1: None}
+########################################################
+# 評価関数 (キャッシュ + 段階的要素 + 高速概算モビリティ)
+########################################################
 
-    # 素朴な効き数用: 各自の合法手数を最後に再利用
-    # ただしフル生成はコストなので局面全体で1回ずつ
-    # ここでは後で move count を取得するため state.turn を利用しない簡易計測
-    # (完全性より軽量性優先)
-    # 駒走査
+EVAL_CACHE = {}
+EVAL_CACHE_MAX = 200000
+
+def _eval_material_and_positional(state):
+    material = {0:0, 1:0}
+    positional = {0:0, 1:0}
+    king_pos = {0:None, 1:None}
+    board = state.board
     for y in range(BOARD_SIZE):
         for x in range(BOARD_SIZE):
-            piece = state.board[x][y]
-            if not piece: continue
-            val = PIECE_VALUES.get(piece.kind, 0)
-            if piece.kind == 'K':
-                king_pos[piece.owner] = (x, y)
-            # 昇級域ボーナス (前進圧力)
-            if y in PROMOTION_ZONE[piece.owner]:
-                val += 10
-            # 位置ボーナス (視点統一: owner=0 から見て上方向が善)
-            y_for_owner0 = y if piece.owner == 0 else 8 - y
-            pos = _pst(piece.kind, y_for_owner0)
-            if piece.owner == owner:
-                material += val
-                positional += pos
+            p = board[x][y]
+            if not p: continue
+            v = PIECE_VALUES.get(p.kind, 0)
+            # 昇級域(敵陣)進入ボーナス
+            if y in PROMOTION_ZONE[p.owner]:
+                v += 8
+            if p.kind == 'K':
+                king_pos[p.owner] = (x, y)
+            yf = y if p.owner == 0 else 8 - y
+            positional[p.owner] += _pst(p.kind, yf)
+            material[p.owner] += v
+    # 手駒: ゲーム進行度で重み変化 (序盤は駒台価値やや低め→終盤 100%)
+    base_non_king = sum(v for v in material.values()) - 2*PIECE_VALUES['K']
+    phase = max(0.0, min(1.0, base_non_king / 6000.0))  # 粗い局面進行 0..1
+    hand_scale = 0.9 + 0.1 * phase
+    for o in (0,1):
+        for k in state.hands[o]:
+            material[o] += PIECE_VALUES.get(k,0) * hand_scale
+    return material, positional, king_pos, phase
+
+def _eval_mobility_fast(state):
+    """フル合法手生成を避けた概算モビリティ。
+    - スライダー: 4/8 方向に最初のブロックまで空きマス数
+    - ステップ駒: 利用可能候補数
+    """
+    board = state.board
+    mob = {0:0,1:0}
+    for y in range(BOARD_SIZE):
+        for x in range(BOARD_SIZE):
+            p = board[x][y]
+            if not p: continue
+            o = p.owner
+            if p.kind[0] in ('R','B') or p.kind in ('R+','B+'):
+                # 対応する方向集合
+                dirs = []
+                base = demote_kind(p.kind)
+                if base == 'R':
+                    dirs.extend([(0,1),(0,-1),(1,0),(-1,0)])
+                if base == 'B':
+                    dirs.extend([(1,1),(1,-1),(-1,1),(-1,-1)])
+                for dx,dy in dirs:
+                    nx,ny = x+dx,y+dy
+                    step_score = 0
+                    while in_bounds(nx,ny):
+                        if not board[nx][ny]:
+                            step_score += 1
+                        else:
+                            step_score += 0.5 if board[nx][ny].owner != o else 0
+                            break
+                        nx += dx; ny += dy
+                    mob[o] += step_score * 0.6
             else:
-                material -= val
-                positional -= pos
+                key = p.kind if p.kind in STEP_MOVES else demote_kind(p.kind)
+                for dx,dy in STEP_MOVES.get(key, []):
+                    dy = dy * (1 if p.owner==0 else -1)
+                    nx,ny = x+dx,y+dy
+                    if in_bounds(nx,ny) and (not board[nx][ny] or board[nx][ny].owner != p.owner):
+                        mob[o] += 0.8
+    return mob
 
-    # 手駒 (位置ボーナス無し、単純加算)
-    for p_kind in state.hands[owner]:
-        material += PIECE_VALUES.get(p_kind, 0)
-    for p_kind in state.hands[1-owner]:
-        material -= PIECE_VALUES.get(p_kind, 0)
-
-    # モビリティ: 現在手番/非手番双方の合法手数差 (軽量化のため一度ずつ生成)
-    current_turn = state.turn
-    own_moves = get_legal_moves_all(state, owner)
-    opp_moves = get_legal_moves_all(state, 1-owner)
-    mobility = (len(own_moves) - len(opp_moves)) * 0.5
-    # 元の手番を復帰 (get_legal_moves_all が内部で turn を書き換えない前提)
-    state.turn = current_turn
-
-    # 王安全性: 周囲 8 マスの味方駒数差分 (敵駒減点)
-    def _kzone(pos, own):
-        if not pos: return 0
-        kx, ky = pos; s = 0
+def _eval_king_safety(state, king_pos):
+    board = state.board
+    safety = {0:0,1:0}
+    for o in (0,1):
+        kp = king_pos[o]
+        if not kp: continue
+        kx,ky = kp
+        shield = 0
         for dx in (-1,0,1):
             for dy in (-1,0,1):
-                if not (dx or dy):
-                    continue
-                nx, ny = kx+dx, ky+dy
-                if 0 <= nx < BOARD_SIZE and 0 <= ny < BOARD_SIZE:
-                    pc = state.board[nx][ny]
+                if dx==0 and dy==0: continue
+                nx,ny = kx+dx,ky+dy
+                if in_bounds(nx,ny):
+                    pc = board[nx][ny]
                     if pc:
-                        s += 0.8 if pc.owner == own else -0.9
-        return s
-    king_safety = _kzone(king_pos[owner], owner) - _kzone(king_pos[1-owner], 1-owner)
+                        if pc.owner==o:
+                            shield += 0.6
+                        else:
+                            shield -= 0.7
+        # 王の段(相手からの距離)でボーナス: 自陣深いほど +
+        depth_bonus = (ky if o==1 else 8-ky) * 0.2
+        safety[o] = shield + depth_bonus
+    return safety
 
-    return material + positional + mobility + king_safety
+def evaluate_board(state, owner):
+    # キャッシュ (Zobrist 利用)。探索中は fast_mode で常に再計算されるので有効。
+    zob = getattr(state, 'zobrist', None)
+    if zob is not None:
+        cached = EVAL_CACHE.get(zob)
+        if cached is not None:
+            return cached if owner==0 else -cached
+
+    material, positional, king_pos, phase = _eval_material_and_positional(state)
+    mobility = _eval_mobility_fast(state)
+    king_safety = _eval_king_safety(state, king_pos)
+
+    # 重み (終盤で王安全性よりモビリティ/位置を強調)
+    w_mat = 1.0
+    w_pos = 0.9 + 0.2 * phase
+    w_mob = 0.5 + 0.5 * phase
+    w_king = 0.8 - 0.3 * phase
+
+    score_side0 = (
+        w_mat * (material[0]-material[1]) +
+        w_pos * (positional[0]-positional[1]) +
+        w_mob * (mobility[0]-mobility[1]) +
+        w_king * (king_safety[0]-king_safety[1])
+    )
+
+    # キャッシュ保存 (owner=0 視点の値を格納)
+    if zob is not None:
+        if len(EVAL_CACHE) > EVAL_CACHE_MAX:
+            # ランダム要素で eviction (簡易)
+            for _ in range(1000):
+                try:
+                    EVAL_CACHE.pop(next(iter(EVAL_CACHE)))
+                except StopIteration:
+                    break
+                if len(EVAL_CACHE) <= EVAL_CACHE_MAX:
+                    break
+        EVAL_CACHE[zob] = score_side0
+    return score_side0 if owner==0 else -score_side0
 
 def get_cpu_move_beginner(state):
     legal_moves = get_legal_moves_all(state, state.turn)
@@ -1202,6 +1275,23 @@ def _generate_capture_moves(state):
                         moves.append((x, y, tx, ty))
     return moves
 
+# -----------------------------
+# 簡易 SEE (Static Exchange Eval)
+# -----------------------------
+def _is_favorable_or_equal_capture(board, move):
+    """簡易静的交換評価: 取る駒価値 - 取る側駒価値 >= -100 (歩1枚相当の損失まで許容)。
+    精密な再帰的交換シミュレーションは行わず高速判定のみ。
+    """
+    sx, sy, tx, ty = move
+    if sx is None:  # 打つ手はここでは評価しない(捕獲手のみ想定)
+        return True
+    attacker = board[sx][sy]
+    target = board[tx][ty]
+    if not attacker or not target:
+        return True
+    gain = PIECE_VALUES.get(target.kind, 0) - PIECE_VALUES.get(attacker.kind, 0)
+    return gain >= -100
+
 def quiescence_search(state, alpha, beta, owner, ctx, ply):
     if ctx.time_limit and (time.time() - ctx.start_time) > ctx.time_limit:
         ctx.timeout = True
@@ -1219,7 +1309,9 @@ def quiescence_search(state, alpha, beta, owner, ctx, ply):
         # 王手中は全手生成（脱出手が非捕獲でも必要）
         legal_moves = get_legal_moves_all(state, state.turn)
     else:
-        legal_moves = _generate_capture_moves(state)
+        # 捕獲手のみ。ただし簡易SEEで明確に不利な捕獲は除外。
+        raw_caps = _generate_capture_moves(state)
+        legal_moves = [m for m in raw_caps if _is_favorable_or_equal_capture(state.board, m)] or raw_caps[:1]
 
     if not legal_moves:
         return stand_pat, None
@@ -1454,6 +1546,8 @@ def apply_move(state, move, is_cpu=False, screen=None, force_promotion=None, upd
     state.turn = 1 - state.turn
     state.cpu_thinking = False
     state.last_move_time = time.time()
+    # タイマー表示を即時更新させるためキャッシュ期限切れ
+    state.timer_display_cache['last_update'] = 0.0
 
     if is_in_check(state.board, state.turn):
         state.check_display_time = time.time()
@@ -1754,6 +1848,33 @@ def _update_timers(screen, state):
                     state.last_move_time = current_time
                 else:
                     state.game_over = True; state.winner = 1 - turn_player
+    # キャッシュ更新 (描画間引きとは独立して 0.2s 単位で計算)
+    _maybe_update_timer_display_cache(state)
+
+# -----------------
+# タイマー表示キャッシュ
+# -----------------
+def _maybe_update_timer_display_cache(state):
+    now = time.time()
+    # 0.25 秒間隔で更新
+    if now - state.timer_display_cache['last_update'] < 0.25:
+        return
+    sente_t, gote_t = state.sente_time, state.gote_time
+    if not state.timer_paused and not state.game_over:
+        elapsed = now - state.last_move_time
+        if state.time_limit is not None:
+            if state.turn == 0:
+                sente_t = max(0, state.sente_time - elapsed)
+            else:
+                gote_t = max(0, state.gote_time - elapsed)
+        else:
+            if state.turn == 0:
+                sente_t += elapsed
+            else:
+                gote_t += elapsed
+    state.timer_display_cache['sente'] = time.strftime('%H:%M:%S', time.gmtime(sente_t))
+    state.timer_display_cache['gote'] = time.strftime('%H:%M:%S', time.gmtime(gote_t))
+    state.timer_display_cache['last_update'] = now
 
 
 def _handle_game_over(screen, state, piece_images):
