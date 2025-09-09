@@ -12,14 +12,41 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
+          cache: 'pip'
       - name: Install requirements
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
-      - name: Build exe with PyInstaller
+      - name: Install UPX (for maximum compression)
+        run: |
+          choco install upx -y
+      - name: Build optimized exe with PyInstaller
         shell: pwsh
-        run: python -m PyInstaller --onefile --noconsole --add-data 'assets;assets' shogigame.py
+        env:
+          PYTHONOPTIMIZE: '2'
+        run: |
+          # Clean previous build artifacts if any
+          if (Test-Path build) { Remove-Item build -Recurse -Force }
+          if (Test-Path dist) { Remove-Item dist -Recurse -Force }
+          # Path where Chocolatey installs UPX
+          $upxDir = 'C:\\ProgramData\\chocolatey\\lib\\upx\\tools'
+          # Use -OO (via python -OO) to strip docstrings & asserts, enable clean, and UPX compression
+          python -OO -m PyInstaller `
+            --onefile `
+            --noconsole `
+            --clean `
+            --log-level=INFO `
+            --upx-dir "$upxDir" `
+            --add-data 'assets;assets' `
+            --exclude-module tkinter `
+            --exclude-module test `
+            --exclude-module unittest `
+            --exclude-module pydoc `
+            --exclude-module doctest `
+            shogigame.py
+          # Show resulting file size
+          Get-ChildItem dist
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

@@ -117,28 +117,32 @@ except pygame.error as e:
     print(f"画像ファイルの読み込みに失敗しました: {e}")
     
 class Piece:
+    """軽量な駒表現 (__slots__ でオブジェクト生成・GC負荷を削減)。"""
+    __slots__ = ("kind", "owner")
     def __init__(self, kind, owner):
-        self.kind, self.owner = kind, owner
-        
+        self.kind = kind
+        self.owner = owner
+
     def clone(self):
+        # clone が多用される箇所は最適化で極力排除するが、互換性のため残す
         return Piece(self.kind, self.owner)
-        
+
     @property
     def promoted(self):
         return self.kind.endswith('+')
-    
+
     def __repr__(self):
         return f"{self.kind}{'S' if self.owner==0 else 'G'}"
-    
+
 class AnimatedPiece:
+    __slots__ = ("piece","x","y","owner","vx","vy","angle","angular_velocity","gravity")
     def __init__(self, piece, x, y, owner):
         self.piece, self.x, self.y, self.owner = piece, x, y, owner
         self.vx, self.vy = random.uniform(-10, 10), random.uniform(-15, -5)
         self.angle, self.angular_velocity = 0, random.uniform(-10, 10)
         self.gravity = 0.5
-    
+
     def update(self):
-        """Update position/angle. Return True if still visible (alive), False if finished."""
         self.x += self.vx
         self.vy += self.gravity
         self.y += self.vy
@@ -834,6 +838,92 @@ def get_cpu_move_medium(state):
         if score > best_score: best_score, best_move = score, move
     return best_move
 
+############################
+# 高速探索用軽量 move/unmove
+############################
+
+def _must_promote(piece_kind, owner, to_y):
+    if piece_kind in ['P','L']:
+        return (owner == 0 and to_y == 0) or (owner == 1 and to_y == 8)
+    if piece_kind == 'N':
+        return (owner == 0 and to_y <= 1) or (owner == 1 and to_y >= 7)
+    return False
+
+def _can_promote(piece_kind, owner, from_y, to_y):
+    return (piece_kind in PROMOTE_MAP and (to_y in PROMOTION_ZONE[owner] or from_y in PROMOTION_ZONE[owner]))
+
+def apply_move_fast(state, move):
+    """探索専用: deepcopy を避けて O(1) で指し手適用し undo 情報を返す。
+    - 省く副作用: 履歴, 時間, サウンド, 棋譜, 表示関連
+    - CPU は optional 成りは常に成る挙動に合わせる (元実装準拠)
+    """
+    sx, sy_or_idx, tx, ty = move
+    undo = {"captured": None, "piece": None, "prev_kind": None, "drop": False}
+    if sx is not None:  # 盤上の移動
+        piece = state.board[sx][sy_or_idx]
+        undo["piece"] = piece
+        undo["prev_kind"] = piece.kind
+        captured = state.board[tx][ty]
+        if captured:
+            undo["captured"] = captured
+            # hands へ追加 (成りは持ち駒では元の駒に戻る)
+            state.hands[state.turn].append(demote_kind(captured.kind))
+            # ソートコストを抑えるため末尾追加のみ。評価では順序不問。
+        # 成り判定
+        if not piece.promoted and piece.kind in PROMOTE_MAP:
+            if _must_promote(piece.kind, piece.owner, ty):
+                piece.kind = PROMOTE_MAP[piece.kind]
+            elif _can_promote(piece.kind, piece.owner, sy_or_idx, ty):
+                piece.kind = PROMOTE_MAP[piece.kind]  # CPU は常成り
+        state.board[tx][ty] = piece
+        state.board[sx][sy_or_idx] = None
+    else:  # 打つ
+        kind = state.hands[state.turn].pop(sy_or_idx)
+        piece = Piece(kind, state.turn)
+        undo["piece"] = piece
+        undo["drop"] = True
+        state.board[tx][ty] = piece
+    state.turn = 1 - state.turn
+    return undo
+
+def undo_move_fast(state, move, undo):
+    # state.turn は apply 後に反転しているので戻す
+    state.turn = 1 - state.turn
+    sx, sy_or_idx, tx, ty = move
+    if sx is not None:  # 差し戻し
+        piece = undo["piece"]
+        # 元位置へ戻す
+        state.board[sx][sy_or_idx] = piece
+        state.board[tx][ty] = undo["captured"]
+        # 成りを戻す
+        if undo["prev_kind"] and piece.kind != undo["prev_kind"]:
+            piece.kind = undo["prev_kind"]
+        # 取った駒を手駒から除去 (末尾探索でOK)
+        if undo["captured"]:
+            demoted = demote_kind(undo["captured"].kind)
+            # 後ろから探す (重複考慮)
+            for i in range(len(state.hands[state.turn]) - 1, -1, -1):
+                if state.hands[state.turn][i] == demoted:
+                    state.hands[state.turn].pop(i)
+                    break
+    else:  # 打った駒を手駒に戻す
+        piece = undo["piece"]
+        state.board[tx][ty] = None
+        state.hands[state.turn].append(piece.kind)
+
+def _move_order_key(state, move):
+    """ムーブオーダリング: (優先度, -捕獲価値, ランダム微調整)
+    小さいタプルほど優先。
+    1) 捕獲手を最優先
+    2) MVV-LVA 的に大きな駒を取る手を優先
+    3) 乱数で僅かに順序を揺らして同値ノードの多様性確保
+    """
+    sx, _, tx, ty = move
+    if sx is not None and state.board[tx][ty]:
+        captured = state.board[tx][ty]
+        return (0, -PIECE_VALUES.get(captured.kind, 0), random.random())
+    return (1, 0, random.random())
+
 def alpha_beta_search(state, depth, alpha, beta, maximizing_player, owner):
     if depth == 0 or state.game_over:
         return evaluate_board(state, owner), None
@@ -841,39 +931,46 @@ def alpha_beta_search(state, depth, alpha, beta, maximizing_player, owner):
     legal_moves = get_legal_moves_all(state, state.turn)
     if not legal_moves:
         return (-100000 if is_in_check(state.board, state.turn) else 0), None
-    
-    best_move = random.choice(legal_moves)
+
+    # ムーブオーダリング (捕獲優先) – Python sort は安定かつ高速
+    legal_moves.sort(key=lambda m: _move_order_key(state, m))
+
+    best_move = legal_moves[0]
     if maximizing_player:
         max_eval = -float('inf')
         for move in legal_moves:
-            temp_state = deepcopy(state)
-            apply_move(temp_state, move, is_cpu=True, update_history=False)
-            val, _ = alpha_beta_search(temp_state, depth-1, alpha, beta, False, owner)
+            undo = apply_move_fast(state, move)
+            val, _ = alpha_beta_search(state, depth - 1, alpha, beta, False, owner)
+            undo_move_fast(state, move, undo)
             if val > max_eval:
                 max_eval = val
                 best_move = move
             alpha = max(alpha, val)
-            if beta <= alpha: break
+            if beta <= alpha:
+                break
         return max_eval, best_move
     else:
         min_eval = float('inf')
         for move in legal_moves:
-            temp_state = deepcopy(state)
-            apply_move(temp_state, move, is_cpu=True, update_history=False)
-            val, _ = alpha_beta_search(temp_state, depth-1, alpha, beta, True, owner)
+            undo = apply_move_fast(state, move)
+            val, _ = alpha_beta_search(state, depth - 1, alpha, beta, True, owner)
+            undo_move_fast(state, move, undo)
             if val < min_eval:
                 min_eval = val
                 best_move = move
             beta = min(beta, val)
-            if beta <= alpha: break
+            if beta <= alpha:
+                break
         return min_eval, best_move
 
 def get_cpu_move_hard(state):
-    _, move = alpha_beta_search(state, 2, -float('inf'), float('inf'), True, state.turn)
+    # 深度 3 (元 2) に引き上げ
+    _, move = alpha_beta_search(state, 3, -float('inf'), float('inf'), True, state.turn)
     return move
 
 def get_cpu_move_master(state):
-    _, move = alpha_beta_search(state, 3, -float('inf'), float('inf'), True, state.turn)
+    # 深度 4 (元 3) に引き上げ
+    _, move = alpha_beta_search(state, 4, -float('inf'), float('inf'), True, state.turn)
     return move
 
 def apply_move(state, move, is_cpu=False, screen=None, force_promotion=None, update_history=True):
@@ -1071,7 +1168,6 @@ def main(initial_settings=None, skip_start=False):
     if action:
         settings = {'handicap': handicap, 'mode': game_mode, 'cpu_diff': cpu_diff, 'time_limit': time_limit}
         return action, settings
-        clock.tick(FPS)
 
     # If loop exits normally, return 'QUIT' plus settings
     settings = {'handicap': handicap, 'mode': game_mode, 'cpu_diff': cpu_diff, 'time_limit': time_limit}
