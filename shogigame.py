@@ -5,7 +5,7 @@ import time
 import random
 import csv
 import os
-from typing import List, Tuple, Dict, Optional, Iterable, TypeAlias, Union, Callable, TypedDict
+from typing import List, Tuple, Dict, Optional, Iterable, TypeAlias, Union, Callable, TypedDict, cast
 
 # --- パス設定 ---
 # スクリプト自身の場所を基準にする
@@ -448,12 +448,15 @@ class GameState:
         }
 
     def save_history(self) -> None:
-        history_item = {
-            'board': deepcopy(self.board), 'hands': deepcopy(self.hands),
-            'turn': self.turn, 'kifu': list(self.kifu),
-            'sente_time': self.sente_time, 'gote_time': self.gote_time,
+        history_item: HistoryItem = {
+            'board': cast(Board, deepcopy(self.board)),
+            'hands': cast(Dict[int, List['Piece']], deepcopy(self.hands)),
+            'turn': self.turn,
+            'kifu': list(self.kifu),
+            'sente_time': self.sente_time,
+            'gote_time': self.gote_time,
             'last_move_target': self.last_move_target,
-            'in_sudden_death': deepcopy(self.in_sudden_death)
+            'in_sudden_death': cast(Dict[int,bool], deepcopy(self.in_sudden_death)),
         }
         self.history.append(history_item)
 
