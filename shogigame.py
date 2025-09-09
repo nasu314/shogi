@@ -187,7 +187,7 @@ PIECE_VALUES = {'K':10000,'R':500,'B':500,'G':300,'S':300,'N':200,'L':200,'P':10
                 'R+':700,'B+':700,'S+':400,'N+':300,'L+':300,'P+':200}
 TIME_SETTINGS = {"なし": None, "15分": 15*60, "30分": 30*60, "1時間": 60*60, "設定": -1}
 SUDDEN_DEATH_TIME = 45
-                
+
 def coords_to_kifu(x, y): return f"{9-x}{JAPANESE_Y_COORDS[y]}"
 def in_bounds(x,y): return 0 <= x < BOARD_SIZE and 0 <= y < BOARD_SIZE
 def demote_kind(kind): return DEMOTE_MAP.get(kind, kind)
@@ -681,7 +681,7 @@ def show_greeting(screen, text, animation_type):
             screen.blit(shadow_surf, (rect.x + 4, rect.y + 4))
             screen.blit(text_surf, rect)
             pygame.display.flip(); clock.tick(FPS)
-    
+
     elif animation_type == 'fade-in':
         for alpha in range(0, 256, 15):
             screen.fill(TATAMI_GREEN)
@@ -690,7 +690,7 @@ def show_greeting(screen, text, animation_type):
             screen.blit(shadow_surf, (rect.x + 4, rect.y + 4))
             screen.blit(text_surf, rect)
             pygame.display.flip(); clock.tick(FPS)
-    
+
     pygame.time.wait(duration)
 
     for alpha in range(255, -1, -15):
@@ -1385,12 +1385,12 @@ def main(initial_settings=None, skip_start=False):
             state = load_kifu_and_setup_state(handicap, game_mode, cpu_diff, time_limit)
         else:
             state = GameState(handicap, game_mode, cpu_diff, time_limit)
-    
+
     show_greeting(screen, "よろしくお願いします", "split-in")
     state.last_move_time = time.time()
     if sound_start: sound_start.play()
     drag_kifu, drag_hand = False, {0:False, 1:False}
-    
+
     # Run game loop until one game ends; return action 'REMATCH' or 'QUIT'
     running = True
     while running:
