@@ -150,6 +150,11 @@ STEP_MOVES = {
 SLIDERS = {'R','B','L'}
 DEMOTE_MAP = {'P+':'P','L+':'L','N+':'N','S+':'S','B+':'B','R+':'R'}
 PROMOTE_MAP = {'P':'P+','L':'L+','N':'N+','S':'S+','B':'B+','R':'R+'}
+SLIDER_DIRS = {
+    'R': [(0, -1), (0, 1), (-1, 0), (1, 0)],
+    'B': [(-1, -1), (-1, 1), (1, -1), (1, 1)],
+    'L': [(0, -1)],
+}
 JAPANESE_PIECE_NAMES = {
     'K':'玉','R':'飛','B':'角','G':'金','S':'銀','N':'桂','L':'香','P':'歩',
     'R+':'龍','B+':'馬','S+':'成銀','N+':'成桂','L+':'成香','P+':'と',
@@ -201,28 +206,45 @@ def _generate_drop_moves(board, p_kind, p_owner):
     moves = []
     for nx in range(BOARD_SIZE):
         for ny in range(BOARD_SIZE):
-            if not board[nx][ny]:
-                # pawn drop rules
-                if p_kind == 'P' and any(board[nx][i] and board[nx][i].kind == 'P' and board[nx][i].owner == p_owner for i in range(BOARD_SIZE)):
-                    continue
-                if (p_kind in ['P', 'L'] and ((p_owner == 0 and ny == 0) or (p_owner == 1 and ny == 8))):
-                    continue
-                if (p_kind == 'N' and ((p_owner == 0 and ny <= 1) or (p_owner == 1 and ny >= 7))):
-                    continue
-                if p_kind == 'P':
-                    temp_board = deepcopy(board)
-                    temp_board[nx][ny] = Piece('P', p_owner)
-                    if is_in_check(temp_board, 1 - p_owner):
-                        opponent_has_legal_move = any(
-                            generate_all_moves(temp_board, opp_x, opp_y, 1 - p_owner)
-                            for opp_x in range(BOARD_SIZE)
-                            for opp_y in range(BOARD_SIZE)
-                            if temp_board[opp_x][opp_y] and temp_board[opp_x][opp_y].owner == 1 - p_owner
-                        )
-                        if not opponent_has_legal_move:
-                            continue
+            if _is_valid_drop(board, p_kind, p_owner, nx, ny):
                 moves.append((nx, ny))
     return moves
+
+def _is_valid_drop(board, p_kind, p_owner, nx, ny):
+    """Return True if dropping p_kind by p_owner at (nx,ny) is allowed."""
+    if board[nx][ny]:
+        return False
+    if p_kind == 'P' and _has_pawn_in_file(board, nx, p_owner):
+        return False
+    if _drop_into_forbidden_rank(p_kind, p_owner, ny):
+        return False
+    if p_kind == 'P' and _pawn_drop_would_result_in_checkmate(board, nx, ny, p_owner):
+        return False
+    return True
+
+def _has_pawn_in_file(board, file_x, owner):
+    return any(board[file_x][i] and board[file_x][i].kind == 'P' and board[file_x][i].owner == owner for i in range(BOARD_SIZE))
+
+def _drop_into_forbidden_rank(p_kind, owner, ny):
+    # forbidden ranks for pawn/knight/kyosha drops
+    if p_kind in ['P', 'L']:
+        return (owner == 0 and ny == 0) or (owner == 1 and ny == 8)
+    if p_kind == 'N':
+        return (owner == 0 and ny <= 1) or (owner == 1 and ny >= 7)
+    return False
+
+def _pawn_drop_would_result_in_checkmate(board, nx, ny, p_owner):
+    temp_board = deepcopy(board)
+    temp_board[nx][ny] = Piece('P', p_owner)
+    if not is_in_check(temp_board, 1 - p_owner):
+        return False
+    opponent_has_legal_move = any(
+        generate_all_moves(temp_board, opp_x, opp_y, 1 - p_owner)
+        for opp_x in range(BOARD_SIZE)
+        for opp_y in range(BOARD_SIZE)
+        if temp_board[opp_x][opp_y] and temp_board[opp_x][opp_y].owner == 1 - p_owner
+    )
+    return not opponent_has_legal_move
 
 def _generate_promoted_moves(board, x, y, p):
     """Generate moves for promoted R/B (they have step moves + base sliders)."""
@@ -346,55 +368,21 @@ def is_in_check(board, owner):
 def generate_all_moves_no_check(board, x, y, owner, kind=None):
     moves = []
     if x is None:
-        p_kind, p_owner = kind, owner
-        for nx in range(BOARD_SIZE):
-            for ny in range(BOARD_SIZE):
-                if not board[nx][ny]:
-                    if p_kind == 'P' and any(
-                        board[nx][i] and board[nx][i].kind == 'P' and board[nx][i].owner == p_owner
-                        for i in range(BOARD_SIZE)
-                    ):
-                        continue
-                    if (p_kind in ['P', 'L'] and ((p_owner == 0 and ny == 0) or (p_owner == 1 and ny == 8))):
-                        continue
-                    if (p_kind == 'N' and ((p_owner == 0 and ny <= 1) or (p_owner == 1 and ny >= 7))):
-                        continue
-                    if p_kind == 'P':
-                        temp_board = deepcopy(board)
-                        temp_board[nx][ny] = Piece('P', p_owner)
-                        if is_in_check(temp_board, 1 - p_owner):
-                            opponent_has_legal_move = any(
-                                generate_all_moves(temp_board, opp_x, opp_y, 1 - p_owner)
-                                for opp_x in range(BOARD_SIZE)
-                                for opp_y in range(BOARD_SIZE)
-                                if temp_board[opp_x][opp_y] and temp_board[opp_x][opp_y].owner == 1 - p_owner
-                            )
-                            if not opponent_has_legal_move:
-                                continue
-                    moves.append((nx, ny))
-        return moves
+        # delegate drop-generation rules to helper
+        return _generate_drop_moves(board, kind, owner)
 
     p = board[x][y]
     if not p:
         return []
     # Use module-level helpers for step and slider move generation
     if p.kind in ['B+', 'R+']:
-        _add_step_moves(board, x, y, p.owner, p.kind, moves)
-        base_kind = demote_kind(p.kind)
-        if base_kind == 'R':
-            _add_slider_moves(board, x, y, p.owner, [(0, -1), (0, 1), (-1, 0), (1, 0)], moves)
-        elif base_kind == 'B':
-            _add_slider_moves(board, x, y, p.owner, [(-1, -1), (-1, 1), (1, -1), (1, 1)], moves)
+        return _generate_promoted_moves(board, x, y, p)
     else:
         if p.kind in STEP_MOVES:
             _add_step_moves(board, x, y, p.owner, p.kind, moves)
-        if p.kind in SLIDERS:
-            if p.kind == 'R':
-                _add_slider_moves(board, x, y, p.owner, [(0, -1), (0, 1), (-1, 0), (1, 0)], moves)
-            elif p.kind == 'B':
-                _add_slider_moves(board, x, y, p.owner, [(-1, -1), (-1, 1), (1, -1), (1, 1)], moves)
-            elif p.kind == 'L':
-                _add_slider_moves(board, x, y, p.owner, [(0, -1)], moves)
+        dirs = SLIDER_DIRS.get(p.kind)
+        if dirs:
+            _add_slider_moves(board, x, y, p.owner, dirs, moves)
     return moves
 
 def generate_all_moves(board, x, y, owner, kind=None, check_rule=True):
@@ -1046,148 +1034,177 @@ def main():
     
     running = True
     while running:
-        if state.mode=='CPU' and state.turn==1 and not state.game_over:
-            if not state.cpu_thinking:
-                if sound_think: sound_think.play(-1)
-                state.cpu_thinking = True
-            draw_game_elements(screen, state, piece_images); pygame.time.wait(100)
-            cpu_move_func = {'beginner':get_cpu_move_beginner,'easy':get_cpu_move_easy,'medium':get_cpu_move_medium,
-                             'hard':get_cpu_move_hard,'master':get_cpu_move_master}[state.cpu_difficulty]
-            cpu_move = cpu_move_func(state)
-            if sound_think: sound_think.stop()
-            if cpu_move: apply_move(state, cpu_move, is_cpu=True, screen=screen)
-        
+        _handle_cpu_turn(screen, state, piece_images)
         mx, my = pygame.mouse.get_pos()
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT: running = False
-            if state.game_over: continue
+        running, drag_kifu, drag_hand = _handle_events(screen, state, mx, my, drag_kifu, drag_hand)
+        _update_timers(screen, state)
+        draw_game_elements(screen, state, piece_images)
+        _handle_game_over(screen, state, piece_images)
+        clock.tick(FPS)
 
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                if state.resign_button_rect.collidepoint(mx,my):
-                    state.game_over = True; state.winner = 1-state.turn
-                    state.last_move_time = time.time()
-                    state.resigning_animation=True
-                    for x in range(BOARD_SIZE):
-                        for y in range(BOARD_SIZE):
-                            p = state.board[x][y]
-                            if p: state.animated_pieces.append(AnimatedPiece(p, BOARD_START_X+x*SQUARE+SQUARE//2, BOARD_START_Y+y*SQUARE+SQUARE//2, p.owner))
-                    if sound_end: sound_end.play()
-                elif state.save_button_rect.collidepoint(mx,my):
-                    if save_kifu_to_csv(state.kifu): state.saved_message_time = time.time()
-                elif hasattr(state, 'matta_button_rect') and state.matta_button_rect.collidepoint(mx,my):
-                    if len(state.history) > 0:
-                        steps = 2 if state.mode == 'CPU' and len(state.history) > 1 and state.turn == 0 else 1
-                        for _ in range(steps):
-                           if state.history: last_state = state.history.pop()
-                        state.load_history(last_state)
-                elif hasattr(state, 'timer_button_rect') and state.timer_button_rect.collidepoint(mx,my):
-                    state.timer_paused = not state.timer_paused
-                    if not state.timer_paused: state.last_move_time = time.time()
 
-                elif state.scrollbar_rect and state.scrollbar_rect.collidepoint(mx,my):
-                    drag_kifu=True; state.scroll_y_start, state.scroll_offset_start = my, state.kifu_scroll_offset
-                elif any(r and r.collidepoint(mx,my) for r in state.hand_scrollbar_rect.values()):
-                    owner = 0 if state.hand_scrollbar_rect[0] and state.hand_scrollbar_rect[0].collidepoint(mx,my) else 1
-                    drag_hand[owner]=True; state.scroll_x_start, state.scroll_offset_start = mx, state.hand_scroll_offset[owner]
-                
-                elif not state.timer_paused:
-                    gx, gy = (mx-BOARD_START_X)//SQUARE, (my-BOARD_START_Y)//SQUARE
-                    hand_y = BOARD_START_Y+BOARD_PIXEL_HEIGHT+COORD_MARGIN if state.turn==0 else BOARD_START_Y-COORD_MARGIN-HAND_AREA_HEIGHT
-                    if hand_y <= my < hand_y + HAND_AREA_HEIGHT:
-                        offset = state.hand_scroll_offset[state.turn]
-                        idx = (mx-BOARD_START_X)//SQUARE + offset
-                        if 0 <= idx < len(state.hands[state.turn]):
-                            state.selected, state.selected_hand = None, idx
-                            kind = state.hands[state.turn][idx]
-                            state.legal_moves = [(None,idx,tx,ty) for tx,ty in generate_all_moves(state.board, None, idx, state.turn, kind=kind)]
-                        continue
-                    if in_bounds(gx,gy):
-                        move = next((m for m in state.legal_moves if m[2]==gx and m[3]==gy and
-                                     ((state.selected and m[0] is not None and state.selected==(m[0],m[1])) or
-                                      (state.selected_hand is not None and m[0] is None and m[1]==state.selected_hand))), None)
-                        if move: apply_move(state, move, screen=screen)
+def _handle_cpu_turn(screen, state, piece_images):
+    """Handle CPU thinking and move application when in CPU mode."""
+    if state.mode == 'CPU' and state.turn == 1 and not state.game_over:
+        if not state.cpu_thinking:
+            if sound_think: sound_think.play(-1)
+            state.cpu_thinking = True
+        draw_game_elements(screen, state, piece_images); pygame.time.wait(100)
+        cpu_move_func = {'beginner': get_cpu_move_beginner, 'easy': get_cpu_move_easy, 'medium': get_cpu_move_medium,
+                         'hard': get_cpu_move_hard, 'master': get_cpu_move_master}[state.cpu_difficulty]
+        cpu_move = cpu_move_func(state)
+        if sound_think: sound_think.stop()
+        if cpu_move:
+            apply_move(state, cpu_move, is_cpu=True, screen=screen)
+
+
+def _handle_events(screen, state, mx, my, drag_kifu, drag_hand):
+    """Process pygame events extracted from main. Returns (running, drag_kifu, drag_hand)."""
+    running = True
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+            return running, drag_kifu, drag_hand
+        if state.game_over:
+            continue
+
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if state.resign_button_rect.collidepoint(mx, my):
+                state.game_over = True; state.winner = 1 - state.turn
+                state.last_move_time = time.time()
+                state.resigning_animation = True
+                for x in range(BOARD_SIZE):
+                    for y in range(BOARD_SIZE):
+                        p = state.board[x][y]
+                        if p: state.animated_pieces.append(AnimatedPiece(p, BOARD_START_X + x * SQUARE + SQUARE // 2, BOARD_START_Y + y * SQUARE + SQUARE // 2, p.owner))
+                if sound_end: sound_end.play()
+            elif state.save_button_rect.collidepoint(mx, my):
+                if save_kifu_to_csv(state.kifu): state.saved_message_time = time.time()
+            elif hasattr(state, 'matta_button_rect') and state.matta_button_rect.collidepoint(mx, my):
+                if len(state.history) > 0:
+                    steps = 2 if state.mode == 'CPU' and len(state.history) > 1 and state.turn == 0 else 1
+                    for _ in range(steps):
+                        if state.history: last_state = state.history.pop()
+                    state.load_history(last_state)
+            elif hasattr(state, 'timer_button_rect') and state.timer_button_rect.collidepoint(mx, my):
+                state.timer_paused = not state.timer_paused
+                if not state.timer_paused: state.last_move_time = time.time()
+
+            elif state.scrollbar_rect and state.scrollbar_rect.collidepoint(mx, my):
+                drag_kifu = True; state.scroll_y_start, state.scroll_offset_start = my, state.kifu_scroll_offset
+            elif any(r and r.collidepoint(mx, my) for r in state.hand_scrollbar_rect.values()):
+                owner = 0 if state.hand_scrollbar_rect[0] and state.hand_scrollbar_rect[0].collidepoint(mx, my) else 1
+                drag_hand[owner] = True; state.scroll_x_start, state.scroll_offset_start = mx, state.hand_scroll_offset[owner]
+
+            elif not state.timer_paused:
+                gx, gy = (mx - BOARD_START_X) // SQUARE, (my - BOARD_START_Y) // SQUARE
+                hand_y = BOARD_START_Y + BOARD_PIXEL_HEIGHT + COORD_MARGIN if state.turn == 0 else BOARD_START_Y - COORD_MARGIN - HAND_AREA_HEIGHT
+                if hand_y <= my < hand_y + HAND_AREA_HEIGHT:
+                    offset = state.hand_scroll_offset[state.turn]
+                    idx = (mx - BOARD_START_X) // SQUARE + offset
+                    if 0 <= idx < len(state.hands[state.turn]):
+                        state.selected, state.selected_hand = None, idx
+                        kind = state.hands[state.turn][idx]
+                        state.legal_moves = [(None, idx, tx, ty) for tx, ty in generate_all_moves(state.board, None, idx, state.turn, kind=kind)]
+                    return running, drag_kifu, drag_hand
+                if in_bounds(gx, gy):
+                    move = next((m for m in state.legal_moves if m[2] == gx and m[3] == gy and
+                                 ((state.selected and m[0] is not None and state.selected == (m[0], m[1])) or
+                                  (state.selected_hand is not None and m[0] is None and m[1] == state.selected_hand))), None)
+                    if move:
+                        apply_move(state, move, screen=screen)
+                    else:
+                        state.selected_hand = None
+                        p = state.board[gx][gy]
+                        if p and p.owner == state.turn:
+                            state.selected, state.legal_moves = (gx, gy), [(gx, gy, tx, ty) for tx, ty in generate_all_moves(state.board, gx, gy, state.turn)]
                         else:
-                            state.selected_hand = None
-                            p = state.board[gx][gy]
-                            if p and p.owner == state.turn:
-                                state.selected, state.legal_moves = (gx,gy), [(gx,gy,tx,ty) for tx,ty in generate_all_moves(state.board, gx, gy, state.turn)]
-                            else: state.selected, state.legal_moves = None, []
-                    else: state.selected, state.selected_hand, state.legal_moves = None, None, []
-            elif event.type == pygame.MOUSEBUTTONUP: drag_kifu, drag_hand[0], drag_hand[1] = False, False, False
-            elif event.type == pygame.MOUSEMOTION:
-                if drag_kifu and state.scrollbar_rect:
-                    k_h = HEIGHT - (WINDOW_PADDING_Y*2 + INFO_PANEL_HEIGHT + KIFU_LIST_PADDING + RESIGN_BUTTON_HEIGHT + SAVE_BUTTON_HEIGHT + MATTA_BUTTON_HEIGHT + TIMER_BUTTON_HEIGHT + 40)
+                            state.selected, state.legal_moves = None, []
+                else:
+                    state.selected, state.selected_hand, state.legal_moves = None, None, []
+        elif event.type == pygame.MOUSEBUTTONUP:
+            drag_kifu, drag_hand[0], drag_hand[1] = False, False, False
+        elif event.type == pygame.MOUSEMOTION:
+            if drag_kifu and state.scrollbar_rect:
+                k_h = HEIGHT - (WINDOW_PADDING_Y * 2 + INFO_PANEL_HEIGHT + KIFU_LIST_PADDING + RESIGN_BUTTON_HEIGHT + SAVE_BUTTON_HEIGHT + MATTA_BUTTON_HEIGHT + TIMER_BUTTON_HEIGHT + 40)
+                max_l = k_h // KIFU_ITEM_HEIGHT
+                if len(state.kifu) > max_l:
+                    s_h = k_h - state.scrollbar_rect.height
+                    if s_h > 0:
+                        ratio = (my - state.scroll_y_start) / s_h
+                        new_off = int(state.scroll_offset_start + ratio * (len(state.kifu) - max_l))
+                        state.kifu_scroll_offset = max(0, min(new_off, len(state.kifu) - max_l))
+            for owner in [0, 1]:
+                if drag_hand[owner] and state.hand_scrollbar_rect[owner]:
+                    max_v = BOARD_PIXEL_WIDTH // SQUARE; h_size = len(state.hands[owner])
+                    if h_size > max_v:
+                        s_w = BOARD_PIXEL_WIDTH - state.hand_scrollbar_rect[owner].width
+                        if s_w > 0:
+                            ratio = (mx - state.scroll_x_start) / s_w; max_off = h_size - max_v
+                            new_off = int(state.scroll_offset_start + ratio * max_off)
+                            state.hand_scroll_offset[owner] = max(0, min(new_off, max_off))
+        elif event.type == pygame.MOUSEWHEEL:
+            hand_rects = {0: pygame.Rect(BOARD_START_X, BOARD_START_Y + BOARD_PIXEL_HEIGHT + COORD_MARGIN, BOARD_PIXEL_WIDTH, HAND_AREA_HEIGHT),
+                          1: pygame.Rect(BOARD_START_X, BOARD_START_Y - COORD_MARGIN - HAND_AREA_HEIGHT, BOARD_PIXEL_WIDTH, HAND_AREA_HEIGHT)}
+            owner = next((o for o, r in hand_rects.items() if r.collidepoint(mx, my)), -1)
+            if owner != -1:
+                max_v = BOARD_PIXEL_WIDTH // SQUARE; h_size = len(state.hands[owner])
+                if h_size > max_v:
+                    max_off = h_size - max_v
+                    state.hand_scroll_offset[owner] = max(0, min(state.hand_scroll_offset[owner] - event.y, max_off))
+            else:
+                k_h = HEIGHT - (WINDOW_PADDING_Y * 2 + INFO_PANEL_HEIGHT + KIFU_LIST_PADDING + RESIGN_BUTTON_HEIGHT + SAVE_BUTTON_HEIGHT + MATTA_BUTTON_HEIGHT + TIMER_BUTTON_HEIGHT + 40)
+                if k_h > 0:
                     max_l = k_h // KIFU_ITEM_HEIGHT
                     if len(state.kifu) > max_l:
-                        s_h = k_h - state.scrollbar_rect.height
-                        if s_h > 0:
-                            ratio = (my-state.scroll_y_start)/s_h
-                            new_off = int(state.scroll_offset_start + ratio*(len(state.kifu)-max_l))
-                            state.kifu_scroll_offset = max(0, min(new_off, len(state.kifu)-max_l))
-                for owner in [0,1]:
-                    if drag_hand[owner] and state.hand_scrollbar_rect[owner]:
-                        max_v=BOARD_PIXEL_WIDTH//SQUARE; h_size=len(state.hands[owner])
-                        if h_size > max_v:
-                            s_w=BOARD_PIXEL_WIDTH - state.hand_scrollbar_rect[owner].width
-                            if s_w > 0:
-                                ratio=(mx-state.scroll_x_start)/s_w; max_off=h_size-max_v
-                                new_off=int(state.scroll_offset_start + ratio * max_off)
-                                state.hand_scroll_offset[owner] = max(0, min(new_off, max_off))
-            elif event.type == pygame.MOUSEWHEEL:
-                hand_rects={0:pygame.Rect(BOARD_START_X, BOARD_START_Y+BOARD_PIXEL_HEIGHT+COORD_MARGIN, BOARD_PIXEL_WIDTH, HAND_AREA_HEIGHT),
-                            1:pygame.Rect(BOARD_START_X, BOARD_START_Y-COORD_MARGIN-HAND_AREA_HEIGHT, BOARD_PIXEL_WIDTH, HAND_AREA_HEIGHT)}
-                owner=next((o for o,r in hand_rects.items() if r.collidepoint(mx,my)), -1)
-                if owner != -1:
-                    max_v=BOARD_PIXEL_WIDTH//SQUARE; h_size=len(state.hands[owner])
-                    if h_size > max_v:
-                        max_off = h_size - max_v
-                        state.hand_scroll_offset[owner] = max(0, min(state.hand_scroll_offset[owner]-event.y, max_off))
-                else:
-                    k_h = HEIGHT - (WINDOW_PADDING_Y*2 + INFO_PANEL_HEIGHT + KIFU_LIST_PADDING + RESIGN_BUTTON_HEIGHT + SAVE_BUTTON_HEIGHT + MATTA_BUTTON_HEIGHT + TIMER_BUTTON_HEIGHT + 40)
-                    if k_h > 0:
-                        max_l = k_h // KIFU_ITEM_HEIGHT
-                        if len(state.kifu) > max_l:
-                            state.kifu_scroll_offset = max(0, min(state.kifu_scroll_offset-event.y*3, len(state.kifu)-max_l))
-        
-        if state.time_limit and not state.game_over and not state.timer_paused:
-            current_time = time.time()
-            elapsed = current_time - state.last_move_time
-            turn_player = state.turn
-            current_player_time = state.sente_time if turn_player == 0 else state.gote_time
+                        state.kifu_scroll_offset = max(0, min(state.kifu_scroll_offset - event.y * 3, len(state.kifu) - max_l))
+    return running, drag_kifu, drag_hand
 
-            if current_player_time - elapsed <= 0:
-                if not state.in_sudden_death[turn_player]:
-                    if turn_player == 0: state.sente_time = SUDDEN_DEATH_TIME
-                    else: state.gote_time = SUDDEN_DEATH_TIME
-                    state.in_sudden_death[turn_player] = True
+
+def _update_timers(screen, state):
+    """Update timers and handle sudden death or timeouts."""
+    if state.time_limit and not state.game_over and not state.timer_paused:
+        current_time = time.time()
+        elapsed = current_time - state.last_move_time
+        turn_player = state.turn
+        current_player_time = state.sente_time if turn_player == 0 else state.gote_time
+
+        if current_player_time - elapsed <= 0:
+            if not state.in_sudden_death[turn_player]:
+                if turn_player == 0:
+                    state.sente_time = SUDDEN_DEATH_TIME
+                else:
+                    state.gote_time = SUDDEN_DEATH_TIME
+                state.in_sudden_death[turn_player] = True
+                state.last_move_time = current_time
+            else:
+                if ask_rematch(screen, "持ち時間が切れました。続けますか？"):
+                    if turn_player == 0:
+                        state.sente_time = SUDDEN_DEATH_TIME
+                    else:
+                        state.gote_time = SUDDEN_DEATH_TIME
                     state.last_move_time = current_time
                 else:
-                    if ask_rematch(screen, "持ち時間が切れました。続けますか？"):
-                        if turn_player == 0: state.sente_time = SUDDEN_DEATH_TIME
-                        else: state.gote_time = SUDDEN_DEATH_TIME
-                        state.last_move_time = current_time
-                    else:
-                        state.game_over = True; state.winner = 1 - turn_player
-        
-        draw_game_elements(screen, state, piece_images)
+                    state.game_over = True; state.winner = 1 - turn_player
 
-        if state.game_over and not hasattr(state, 'end_processed'):
-            if state.checkmate_display_time > 0:
-                show_greeting(screen, "詰み", "fade-in")
-            elif state.resigning_animation:
-                while not state.animation_finished:
-                    draw_game_elements(screen, state, piece_images)
-            
-            show_greeting(screen, "ありがとうございました", "fade-in")
-            action = game_over_screen(screen, state)
-            if action == 'REMATCH':
-                main()
-            elif action == 'QUIT':
-                running = False
-            state.end_processed = True
-        
-        clock.tick(FPS)
-    pygame.quit(); sys.exit()
+
+def _handle_game_over(screen, state, piece_images):
+    """Handle game over display and actions."""
+    if state.game_over and not hasattr(state, 'end_processed'):
+        if state.checkmate_display_time > 0:
+            show_greeting(screen, "詰み", "fade-in")
+        elif state.resigning_animation:
+            while not state.animation_finished:
+                draw_game_elements(screen, state, piece_images)
+
+        show_greeting(screen, "ありがとうございました", "fade-in")
+        action = game_over_screen(screen, state)
+        if action == 'REMATCH':
+            main()
+        elif action == 'QUIT':
+            global running_flag; running_flag = False
+        state.end_processed = True
+    
 
 if __name__=="__main__":
     main()
