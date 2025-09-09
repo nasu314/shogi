@@ -58,13 +58,27 @@ PIECE_OFFSET = (SQUARE - PIECE_SIZE) // 2
 # BOARD_OFFSET was unused and removed
     
 FPS = 60
-FONT = pygame.font.SysFont("MS Mincho", 18)
-LARGE_FONT = pygame.font.SysFont("MS Mincho", 24)
-MONO_FONT = pygame.font.SysFont("MS Mincho", 14)
-TITLE_FONT = pygame.font.SysFont("MS Mincho", 80)
-CHECK_FONT = pygame.font.SysFont("MS Mincho", 100, bold=True)
-GREETING_FONT = pygame.font.SysFont("MS Mincho", 70, bold=True)
-RESULT_FONT = pygame.font.SysFont("MS Mincho", 90, bold=True)
+try:
+    FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 18)
+    LARGE_FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 24)
+    MONO_FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 14)
+    TITLE_FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 80)
+    CHECK_FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 100)
+    GREETING_FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 70)
+    RESULT_FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 90)
+    # set bold where it was previously requested
+    CHECK_FONT.set_bold(True)
+    GREETING_FONT.set_bold(True)
+    RESULT_FONT.set_bold(True)
+except Exception:
+    # fallback to system fonts if the TTF cannot be loaded
+    FONT = pygame.font.SysFont("MS Mincho", 18)
+    LARGE_FONT = pygame.font.SysFont("MS Mincho", 24)
+    MONO_FONT = pygame.font.SysFont("MS Mincho", 14)
+    TITLE_FONT = pygame.font.SysFont("MS Mincho", 80)
+    CHECK_FONT = pygame.font.SysFont("MS Mincho", 100, bold=True)
+    GREETING_FONT = pygame.font.SysFont("MS Mincho", 70, bold=True)
+    RESULT_FONT = pygame.font.SysFont("MS Mincho", 90, bold=True)
     
 # 色の定義
 WHITE = (223, 235, 234)
@@ -1032,6 +1046,7 @@ def main():
     if sound_start: sound_start.play()
     drag_kifu, drag_hand = False, {0:False, 1:False}
     
+    # Run game loop until one game ends; return action 'REMATCH' or 'QUIT'
     running = True
     while running:
         _handle_cpu_turn(screen, state, piece_images)
@@ -1041,6 +1056,9 @@ def main():
         draw_game_elements(screen, state, piece_images)
         _handle_game_over(screen, state, piece_images)
         clock.tick(FPS)
+
+    # If loop exits normally, return 'QUIT' for caller to decide
+    return 'QUIT'
 
 
 def _handle_cpu_turn(screen, state, piece_images):
@@ -1069,7 +1087,7 @@ def _handle_events(screen, state, mx, my, drag_kifu, drag_hand):
             continue
 
         if event.type == pygame.MOUSEBUTTONDOWN:
-            if state.resign_button_rect.collidepoint(mx, my):
+            if getattr(state, 'resign_button_rect', None) and state.resign_button_rect.collidepoint(mx, my):
                 state.game_over = True; state.winner = 1 - state.turn
                 state.last_move_time = time.time()
                 state.resigning_animation = True
@@ -1078,19 +1096,19 @@ def _handle_events(screen, state, mx, my, drag_kifu, drag_hand):
                         p = state.board[x][y]
                         if p: state.animated_pieces.append(AnimatedPiece(p, BOARD_START_X + x * SQUARE + SQUARE // 2, BOARD_START_Y + y * SQUARE + SQUARE // 2, p.owner))
                 if sound_end: sound_end.play()
-            elif state.save_button_rect.collidepoint(mx, my):
+            elif getattr(state, 'save_button_rect', None) and state.save_button_rect.collidepoint(mx, my):
                 if save_kifu_to_csv(state.kifu): state.saved_message_time = time.time()
-            elif hasattr(state, 'matta_button_rect') and state.matta_button_rect.collidepoint(mx, my):
+            elif getattr(state, 'matta_button_rect', None) and state.matta_button_rect.collidepoint(mx, my):
                 if len(state.history) > 0:
                     steps = 2 if state.mode == 'CPU' and len(state.history) > 1 and state.turn == 0 else 1
                     for _ in range(steps):
                         if state.history: last_state = state.history.pop()
                     state.load_history(last_state)
-            elif hasattr(state, 'timer_button_rect') and state.timer_button_rect.collidepoint(mx, my):
+            elif getattr(state, 'timer_button_rect', None) and state.timer_button_rect.collidepoint(mx, my):
                 state.timer_paused = not state.timer_paused
                 if not state.timer_paused: state.last_move_time = time.time()
 
-            elif state.scrollbar_rect and state.scrollbar_rect.collidepoint(mx, my):
+            elif getattr(state, 'scrollbar_rect', None) and state.scrollbar_rect.collidepoint(mx, my):
                 drag_kifu = True; state.scroll_y_start, state.scroll_offset_start = my, state.kifu_scroll_offset
             elif any(r and r.collidepoint(mx, my) for r in state.hand_scrollbar_rect.values()):
                 owner = 0 if state.hand_scrollbar_rect[0] and state.hand_scrollbar_rect[0].collidepoint(mx, my) else 1
@@ -1200,11 +1218,17 @@ def _handle_game_over(screen, state, piece_images):
         show_greeting(screen, "ありがとうございました", "fade-in")
         action = game_over_screen(screen, state)
         if action == 'REMATCH':
-            main()
+            return True
         elif action == 'QUIT':
-            global running_flag; running_flag = False
+            return False
         state.end_processed = True
     
 
 if __name__=="__main__":
-    main()
+    # Run games until user chooses to quit
+    while True:
+        action = main()
+        if action == 'REMATCH':
+            continue
+        else:
+            break
