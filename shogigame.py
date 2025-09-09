@@ -828,15 +828,7 @@ def get_cpu_move_easy(state):
     capture_moves = [m for m in legal_moves if m[0] is not None and state.board[m[2]][m[3]]]
     return random.choice(capture_moves) if capture_moves else random.choice(legal_moves)
 
-def get_cpu_move_medium(state):
-    legal_moves = get_legal_moves_all(state, state.turn)
-    if not legal_moves: return None
-    best_move, best_score = random.choice(legal_moves), -float('inf')
-    for move in legal_moves:
-        temp_state = deepcopy(state); apply_move(temp_state, move, is_cpu=True, update_history=False)
-        score = evaluate_board(temp_state, state.turn)
-        if score > best_score: best_score, best_move = score, move
-    return best_move
+## get_cpu_move_medium は後方で探索最適化版を定義
 
 ############################
 # 高速探索用軽量 move/unmove
@@ -924,54 +916,295 @@ def _move_order_key(state, move):
         return (0, -PIECE_VALUES.get(captured.kind, 0), random.random())
     return (1, 0, random.random())
 
-def alpha_beta_search(state, depth, alpha, beta, maximizing_player, owner):
-    if depth == 0 or state.game_over:
+############################
+# A: Zobrist ハッシュ & 置換表 / B: 反復深化 / C: Killer & History
+############################
+
+# --- Zobrist 初期化 ---
+ZOBRIST_PIECE_KEYS = {}
+_ALL_BOARD_KINDS = ['K','R','B','G','S','N','L','P','R+','B+','S+','N+','L+','P+']
+for x in range(BOARD_SIZE):
+    for y in range(BOARD_SIZE):
+        for k in _ALL_BOARD_KINDS:
+            for owner in (0,1):
+                ZOBRIST_PIECE_KEYS[(x,y,k,owner)] = random.getrandbits(64)
+ZOBRIST_SIDE_KEY = random.getrandbits(64)
+# 持ち駒(成らない基本駒のみ)枚数は動的再計算方式を採用（実装簡略化）
+
+def recompute_zobrist(state):
+    h = 0
+    for x in range(BOARD_SIZE):
+        for y in range(BOARD_SIZE):
+            p = state.board[x][y]
+            if p:
+                h ^= ZOBRIST_PIECE_KEYS[(x,y,p.kind,p.owner)]
+    # hands をカウント反映（順序不依）: piece kind 出現回数ごとに hash を混合
+    for owner in (0,1):
+        counts = {}
+        for k in state.hands[owner]:
+            counts[k] = counts.get(k,0)+1
+        for k,c in counts.items():
+            # 簡易: (kind,owner,count) を文字列化し組込み hash で混合 → 64bit 化
+            mix = hash((k,owner,c)) & 0xFFFFFFFFFFFFFFFF
+            h ^= mix
+    if state.turn == 1:
+        h ^= ZOBRIST_SIDE_KEY
+    state.zobrist = h
+    return h
+
+# GameState に zobrist を追加
+if not hasattr(GameState, 'zobrist'):
+    GameState.zobrist = 0  # 後で初期化
+
+# 置換表エントリ
+class TTEntry:
+    __slots__ = ("zobrist","depth","score","flag","best_move","alpha","beta")
+    def __init__(self, zobrist, depth, score, flag, best_move, alpha, beta):
+        self.zobrist=zobrist; self.depth=depth; self.score=score; self.flag=flag
+        self.best_move=best_move; self.alpha=alpha; self.beta=beta
+
+TT = {}
+TT_MAX_SIZE = 50000
+
+KILLER_MOVES = {}  # depth -> [m1, m2]
+HISTORY_TABLE = {} # (turn, move_key) -> score
+
+def move_key_for_history(move):
+    sx, sy, tx, ty = move
+    return (sx, sy, tx, ty)
+
+def store_killer(depth, move):
+    if move is None: return
+    arr = KILLER_MOVES.get(depth, [])
+    if move in arr: return
+    arr = [move] + arr
+    if len(arr) > 2: arr = arr[:2]
+    KILLER_MOVES[depth] = arr
+
+def add_history(turn, move, depth):
+    if move is None: return
+    key = (turn, move_key_for_history(move))
+    HISTORY_TABLE[key] = HISTORY_TABLE.get(key, 0) + depth * depth
+
+def history_score(turn, move):
+    return HISTORY_TABLE.get((turn, move_key_for_history(move)), 0)
+
+def ordered_moves(state, legal_moves, tt_move, depth):
+    scored = []
+    killers = KILLER_MOVES.get(depth, [])
+    for m in legal_moves:
+        if m == tt_move:
+            priority = (-1000000, 0)
+        elif m in killers:
+            priority = (-900000, 0)
+        else:
+            sx,_,tx,ty = m
+            captured_value = PIECE_VALUES.get(state.board[tx][ty].kind,0) if (sx is not None and state.board[tx][ty]) else 0
+            cap_flag = 1 if captured_value>0 else 0
+            priority = (-cap_flag*500 - captured_value, -history_score(state.turn, m))
+        scored.append((priority, m))
+    scored.sort(key=lambda x: x[0])
+    return [m for _,m in scored]
+
+class SearchContext:
+    __slots__ = ("start_time","time_limit","nodes","timeout")
+    def __init__(self, time_limit_ms):
+        self.start_time = time.time()
+        self.time_limit = time_limit_ms/1000.0 if time_limit_ms else None
+        self.nodes = 0
+        self.timeout = False
+
+INF = 10**9
+
+def _generate_capture_moves(state):
+    """現在手番の合法手のうち駒取り手のみを列挙。"""
+    moves = []
+    for x in range(BOARD_SIZE):
+        for y in range(BOARD_SIZE):
+            p = state.board[x][y]
+            if p and p.owner == state.turn:
+                for tx, ty in generate_all_moves(state.board, x, y, state.turn):
+                    if state.board[tx][ty]:  # capture
+                        moves.append((x, y, tx, ty))
+    return moves
+
+def quiescence_search(state, alpha, beta, owner, ctx, ply):
+    if ctx.time_limit and (time.time() - ctx.start_time) > ctx.time_limit:
+        ctx.timeout = True
         return evaluate_board(state, owner), None
+    ctx.nodes += 1
+
+    stand_pat = evaluate_board(state, owner)
+    if stand_pat >= beta:
+        return beta, None
+    if alpha < stand_pat:
+        alpha = stand_pat
+
+    in_check_flag = is_in_check(state.board, state.turn)
+    if in_check_flag:
+        # 王手中は全手生成（脱出手が非捕獲でも必要）
+        legal_moves = get_legal_moves_all(state, state.turn)
+    else:
+        legal_moves = _generate_capture_moves(state)
+
+    if not legal_moves:
+        return stand_pat, None
+
+    # 簡易オーダリング：捕獲価値降順
+    def cap_score(m):
+        sx, _, tx, ty = m
+        if sx is not None and state.board[tx][ty]:
+            return -PIECE_VALUES.get(state.board[tx][ty].kind, 0)
+        return 0
+    legal_moves.sort(key=cap_score)
+
+    best_move = legal_moves[0]
+    for move in legal_moves:
+        undo = apply_move_fast(state, move)
+        recompute_zobrist(state)
+        score, _ = quiescence_search(state, alpha, beta, owner, ctx, ply+1)
+        undo_move_fast(state, move, undo)
+        recompute_zobrist(state)
+        if ctx.timeout:
+            return alpha, best_move
+        if score > alpha:
+            alpha = score
+            best_move = move
+        if alpha >= beta:
+            break
+    return alpha, best_move
+
+def _tt_probe(zob, depth, alpha, beta):
+    """置換表参照しウィンドウ調整/即時返却を判定。
+    戻り値: (hit, new_alpha, new_beta, entry)
+    hit が True なら (score, best_move) 即時返却用に entry.score/best_move 参照可。
+    """
+    entry = TT.get(zob)
+    if not entry or entry.depth < depth:
+        return False, alpha, beta, entry
+    # 深さ十分
+    if entry.flag == 'EXACT':
+        return True, alpha, beta, entry
+    if entry.flag == 'LOWER' and entry.score > alpha:
+        alpha = entry.score
+    elif entry.flag == 'UPPER' and entry.score < beta:
+        beta = entry.score
+    if alpha >= beta:
+        return True, alpha, beta, entry
+    return False, alpha, beta, entry
+
+def _tt_store(zob, depth, value, flag, best_move, alpha, beta):
+    if len(TT) > TT_MAX_SIZE:
+        for _ in range(1000):
+            TT.pop(next(iter(TT)))
+            if len(TT) <= TT_MAX_SIZE:
+                break
+    TT[zob] = TTEntry(zob, depth, value, flag, best_move, alpha, beta)
+
+def _search_child(state, move, depth, alpha, beta, maximizing, owner, ply, ctx):
+    """1 手指して子ノードを評価。探索打ち切り時は (score, timeout_flag) を返す"""
+    undo = apply_move_fast(state, move)
+    recompute_zobrist(state)
+    child_val, _ = alpha_beta_search(state, depth-1, alpha, beta, not maximizing, owner, ply+1, ctx)
+    undo_move_fast(state, move, undo)
+    recompute_zobrist(state)
+    if ctx.timeout:
+        return child_val, True
+    return child_val, False
+
+def _record_cut_or_history(first_move, current_move, maximizing, owner, depth, ply):
+    if current_move != first_move:
+        store_killer(ply, current_move)
+    else:
+        add_history(owner if maximizing else (1-owner), current_move, depth)
+
+def _final_flag(value, original_alpha, original_beta):
+    if value <= original_alpha:
+        return 'UPPER'
+    if value >= original_beta:
+        return 'LOWER'
+    return 'EXACT'
+
+def _search_loop(state, ordered, depth, alpha, beta, maximizing, owner, ply, ctx, original_alpha, original_beta):
+    """最大化/最小化共通ループ。戻り: (value, best_move, flag, alpha, beta)"""
+    first_move = ordered[0]
+    best_move = first_move
+    value = -INF if maximizing else INF
+    for move in ordered:
+        child_val, timed_out = _search_child(state, move, depth, alpha, beta, maximizing, owner, ply, ctx)
+        if timed_out:
+            # 既存 value が初期値なら評価で埋める
+            if (maximizing and value == -INF) or ((not maximizing) and value == INF):
+                value = evaluate_board(state, owner)
+            return value, best_move, 'EXACT', alpha, beta
+        improved = (child_val > value) if maximizing else (child_val < value)
+        if improved:
+            value = child_val
+            best_move = move
+        if maximizing:
+            alpha = max(alpha, value)
+        else:
+            beta = min(beta, value)
+        if alpha >= beta:
+            _record_cut_or_history(first_move, move, maximizing, owner, depth, ply)
+            break
+    flag = _final_flag(value, original_alpha, original_beta)
+    return value, best_move, flag, alpha, beta
+
+def alpha_beta_search(state, depth, alpha, beta, maximizing_player, owner, ply, ctx):
+    # 時間/端末判定
+    if ctx.time_limit and (time.time() - ctx.start_time) > ctx.time_limit:
+        ctx.timeout = True
+        return evaluate_board(state, owner), None
+    ctx.nodes += 1
+    if depth == 0 or state.game_over:
+        return quiescence_search(state, alpha, beta, owner, ctx, ply)
+
+    zob = state.zobrist
+    hit, alpha2, beta2, entry = _tt_probe(zob, depth, alpha, beta)
+    alpha, beta = alpha2, beta2
+    if hit and entry:
+        return entry.score, entry.best_move
 
     legal_moves = get_legal_moves_all(state, state.turn)
     if not legal_moves:
-        return (-100000 if is_in_check(state.board, state.turn) else 0), None
+        score = -100000 if is_in_check(state.board, state.turn) else 0
+        return score, None
 
-    # ムーブオーダリング (捕獲優先) – Python sort は安定かつ高速
-    legal_moves.sort(key=lambda m: _move_order_key(state, m))
+    tt_move = entry.best_move if entry else None
+    ordered = ordered_moves(state, legal_moves, tt_move, ply)
+    original_alpha, original_beta = alpha, beta
+    value, best_move, flag, alpha, beta = _search_loop(state, ordered, depth, alpha, beta, maximizing_player, owner, ply, ctx, original_alpha, original_beta)
+    _tt_store(zob, depth, value, flag, best_move, alpha, beta)
+    return value, best_move
 
-    best_move = legal_moves[0]
-    if maximizing_player:
-        max_eval = -float('inf')
-        for move in legal_moves:
-            undo = apply_move_fast(state, move)
-            val, _ = alpha_beta_search(state, depth - 1, alpha, beta, False, owner)
-            undo_move_fast(state, move, undo)
-            if val > max_eval:
-                max_eval = val
-                best_move = move
-            alpha = max(alpha, val)
-            if beta <= alpha:
-                break
-        return max_eval, best_move
-    else:
-        min_eval = float('inf')
-        for move in legal_moves:
-            undo = apply_move_fast(state, move)
-            val, _ = alpha_beta_search(state, depth - 1, alpha, beta, True, owner)
-            undo_move_fast(state, move, undo)
-            if val < min_eval:
-                min_eval = val
-                best_move = move
-            beta = min(beta, val)
-            if beta <= alpha:
-                break
-        return min_eval, best_move
+def iterative_deepening_best_move(state, max_depth, time_limit_ms):
+    # 初期 zobrist
+    recompute_zobrist(state)
+    ctx = SearchContext(time_limit_ms)
+    best_move = None
+    best_value = -INF
+    for d in range(1, max_depth+1):
+        val, move = alpha_beta_search(state, d, -INF, INF, True, state.turn, 0, ctx)
+        if not ctx.timeout and move is not None:
+            best_move = move
+            best_value = val
+        elif ctx.timeout and best_move is not None:
+            break
+        if ctx.timeout:
+            break
+    state._last_search_value = best_value  # type: ignore[attr-defined]
+    return best_move
 
 def get_cpu_move_hard(state):
-    # 深度 3 (元 2) に引き上げ
-    _, move = alpha_beta_search(state, 3, -float('inf'), float('inf'), True, state.turn)
-    return move
+    return iterative_deepening_best_move(state, max_depth=4, time_limit_ms=600)
 
 def get_cpu_move_master(state):
-    # 深度 4 (元 3) に引き上げ
-    _, move = alpha_beta_search(state, 4, -float('inf'), float('inf'), True, state.turn)
-    return move
+    return iterative_deepening_best_move(state, max_depth=6, time_limit_ms=1500)
+
+# medium も軽い反復深化に差し替え
+def get_cpu_move_medium(state):  # 新探索版 (再定義)
+    return iterative_deepening_best_move(state, max_depth=3, time_limit_ms=250) or get_cpu_move_easy(state)
 
 def apply_move(state, move, is_cpu=False, screen=None, force_promotion=None, update_history=True):
     if update_history: state.save_history()
@@ -1126,7 +1359,7 @@ def game_over_screen(screen, state):
 
 def main(initial_settings=None, skip_start=False):
     screen = pygame.display.set_mode((WIDTH, HEIGHT)); pygame.display.set_caption("将棋道場")
-    clock = pygame.time.Clock(); piece_images = load_piece_images()
+    piece_images = load_piece_images()
 
     # If initial_settings provided and skip_start True, start a fresh game with those settings
     if initial_settings and skip_start:
