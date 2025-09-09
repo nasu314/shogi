@@ -5,7 +5,7 @@ import time
 import random
 import csv
 import os
-from typing import List, Tuple, Dict, Optional, Iterable, TypeAlias, Union, Callable
+from typing import List, Tuple, Dict, Optional, Iterable, TypeAlias, Union, Callable, TypedDict
 
 # --- パス設定 ---
 # スクリプト自身の場所を基準にする
@@ -369,7 +369,41 @@ def _pst(kind: str, y_from_owner0: int) -> int:
     return tbl[y_from_owner0]
 CPU_DIFFICULTIES = {'入門': 'beginner', '初級': 'easy', '中級': 'medium', '上級': 'hard', '達人': 'master'}
 
+class HistoryItem(TypedDict):
+    board: Board
+    hands: Dict[int, List['Piece']]
+    turn: int
+    kifu: List[str]
+    sente_time: float
+    gote_time: float
+    last_move_target: Optional[Tuple[int,int]]
+    in_sudden_death: Dict[int,bool]
+
 class GameState:
+    # --- 属性型注釈 (mypy Unknown 抑制) ---
+    board: Board
+    hands: Dict[int, List['Piece']]
+    turn: int
+    selected: Optional[Tuple[int,int]]
+    legal_moves: List[Tuple[int,int]]
+    selected_hand: Optional[int]
+    kifu: List[str]
+    game_over: bool
+    winner: Optional[int]
+    last_move_target: Optional[Tuple[int,int]]
+    mode: str
+    cpu_difficulty: str
+    time_limit: Optional[int]
+    sente_time: float
+    gote_time: float
+    last_move_time: float
+    timer_paused: bool
+    in_sudden_death: Dict[int,bool]
+    kifu_scroll_offset: int
+    saved_message_time: Optional[float]
+    resigning_animation: bool
+    history: List[HistoryItem]
+    timer_display_cache: Dict[str, Union[str,float]]
     def __init__(self, handicap: str='平手', mode: str='2P', cpu_difficulty: str='easy', time_limit: Optional[int]=None):
         self.board = standard_setup()
         if handicap in HANDICAPS:
@@ -379,7 +413,7 @@ class GameState:
         self.hands = {0: [], 1: []}
         self.turn = 0
         self.selected = None
-        self.legal_moves = []
+        self.legal_moves: List[Tuple[int,int]] = []
         self.selected_hand = None
         self.kifu = []
         self.game_over = False
@@ -389,31 +423,31 @@ class GameState:
         self.mode = mode
         self.cpu_difficulty = cpu_difficulty
         self.time_limit = time_limit
-        self.sente_time = time_limit if time_limit else 0.0
-        self.gote_time = time_limit if time_limit else 0.0
+        base_time = float(time_limit) if time_limit is not None else 0.0
+        self.sente_time = base_time
+        self.gote_time = base_time
         self.last_move_time = time.time()
         self.timer_paused = False
         self.in_sudden_death = {0: False, 1: False}
-
         self.kifu_scroll_offset = 0
         self.saved_message_time = None
         self.resigning_animation = False
-        self.animated_pieces = []
+        self.animated_pieces: List['AnimatedPiece'] = []
         self.animation_finished = False
         self.cpu_thinking = False
         self.hand_scroll_offset = {0: 0, 1: 0}
         self.hand_scrollbar_rect = {0: None, 1: None}
         self.check_display_time = 0
         self.checkmate_display_time = 0
+        # 履歴とタイマー表示キャッシュ
         self.history = []
-        # タイマー表示キャッシュ (UI 再描画の度に時間計算しない)
         self.timer_display_cache = {
             'sente': '00:00:00',
             'gote': '00:00:00',
-            'last_update': 0.0
+            'last_update': 0.0,
         }
 
-    def save_history(self):
+    def save_history(self) -> None:
         history_item = {
             'board': deepcopy(self.board), 'hands': deepcopy(self.hands),
             'turn': self.turn, 'kifu': list(self.kifu),
@@ -423,7 +457,7 @@ class GameState:
         }
         self.history.append(history_item)
 
-    def load_history(self, item):
+    def load_history(self, item: HistoryItem) -> None:
         self.board = item['board']
         self.hands = item['hands']
         self.turn = item['turn']
@@ -484,7 +518,8 @@ def generate_all_moves(board: Board, x: Optional[int], y: int, owner: int, kind:
     valid_moves = []
     for tx, ty in moves:
         temp_board = deepcopy(board)
-        if x is None: temp_board[tx][ty] = Piece(kind, owner)
+        if x is None and kind is not None:
+            temp_board[tx][ty] = Piece(kind, owner)
         else:
             piece = temp_board[x][y]
             temp_board[tx][ty], temp_board[x][y] = piece.clone(), None
@@ -504,8 +539,8 @@ def get_legal_moves_all(state: 'GameState', owner: int) -> List[Move]:
             p = col[y]
             if p and p.owner == owner:
                 all_moves.extend([(x, y, tx, ty) for tx, ty in generate_all_moves(board, x, y, owner)])
-    for idx, kind in enumerate(list(state.hands[owner])):
-        all_moves.extend([(None, idx, tx, ty) for tx, ty in generate_all_moves(board, None, idx, owner, kind=kind)])
+    for idx, piece in enumerate(list(state.hands[owner])):
+        all_moves.extend([(None, idx, tx, ty) for tx, ty in generate_all_moves(board, None, idx, owner, kind=piece.kind)])
     return all_moves
 
 # ----------------------
