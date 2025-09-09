@@ -55,8 +55,6 @@ BOARD_START_Y = WINDOW_PADDING_Y + HAND_AREA_HEIGHT + COORD_MARGIN
         
 PIECE_SIZE = 60
 PIECE_OFFSET = (SQUARE - PIECE_SIZE) // 2
-# BOARD_OFFSET was unused and removed
-    
 FPS = 60
 try:
     FONT = pygame.font.Font(os.path.join(assets_path, "MPLUS1p-Regular.ttf"), 18)
@@ -425,8 +423,15 @@ def get_legal_moves_all(state, owner):
     return all_moves
 
 def check_mate(state):
-    if not is_in_check(state.board, state.turn): return False
-    if not get_legal_moves_all(state, state.turn): return True
+    # If the king for the side to move is missing (captured), treat as mate/game over
+    king_pos = find_king(state.board, state.turn)
+    if not king_pos:
+        return True
+    # Otherwise, standard mate detection: in-check and no legal moves
+    if not is_in_check(state.board, state.turn):
+        return False
+    if not get_legal_moves_all(state, state.turn):
+        return True
     return False
 
 def check_sennichite(state):
@@ -1022,24 +1027,32 @@ def game_over_screen(screen, state):
         pygame.display.flip()
         pygame.time.Clock().tick(FPS)
 
-def main():
+def main(initial_settings=None, skip_start=False):
     screen = pygame.display.set_mode((WIDTH, HEIGHT)); pygame.display.set_caption("将棋道場")
     clock = pygame.time.Clock(); piece_images = load_piece_images()
-    game_mode = start_screen(screen)
-    
-    handicap, cpu_diff, time_limit = '通常', 'easy', None
-    
-    if game_mode == '2P':
-        handicap = selection_screen(screen, "ハンディキャップを選択", HANDICAPS.keys())
-        time_choice = selection_screen(screen, "持ち時間モードを選択", TIME_SETTINGS.keys())
-        time_limit = TIME_SETTINGS[time_choice]
-    else:
-        cpu_diff = CPU_DIFFICULTIES[selection_screen(screen, "CPUの強さを選択", CPU_DIFFICULTIES.keys())]
 
-    if ask_continue_screen(screen) == 'continue':
-        state = load_kifu_and_setup_state(handicap, game_mode, cpu_diff, time_limit)
-    else:
+    # If initial_settings provided and skip_start True, start a fresh game with those settings
+    if initial_settings and skip_start:
+        game_mode = initial_settings.get('mode', '2P')
+        handicap = initial_settings.get('handicap', '通常')
+        cpu_diff = initial_settings.get('cpu_diff', 'easy')
+        time_limit = initial_settings.get('time_limit', None)
+        # Always start fresh (do not load previous kifu)
         state = GameState(handicap, game_mode, cpu_diff, time_limit)
+    else:
+        game_mode = start_screen(screen)
+        handicap, cpu_diff, time_limit = '通常', 'easy', None
+        if game_mode == '2P':
+            handicap = selection_screen(screen, "ハンディキャップを選択", HANDICAPS.keys())
+            time_choice = selection_screen(screen, "持ち時間モードを選択", TIME_SETTINGS.keys())
+            time_limit = TIME_SETTINGS[time_choice]
+        else:
+            cpu_diff = CPU_DIFFICULTIES[selection_screen(screen, "CPUの強さを選択", CPU_DIFFICULTIES.keys())]
+
+        if ask_continue_screen(screen) == 'continue':
+            state = load_kifu_and_setup_state(handicap, game_mode, cpu_diff, time_limit)
+        else:
+            state = GameState(handicap, game_mode, cpu_diff, time_limit)
     
     show_greeting(screen, "よろしくお願いします", "split-in")
     state.last_move_time = time.time()
@@ -1054,11 +1067,15 @@ def main():
         running, drag_kifu, drag_hand = _handle_events(screen, state, mx, my, drag_kifu, drag_hand)
         _update_timers(screen, state)
         draw_game_elements(screen, state, piece_images)
-        _handle_game_over(screen, state, piece_images)
+    action = _handle_game_over(screen, state, piece_images)
+    if action:
+        settings = {'handicap': handicap, 'mode': game_mode, 'cpu_diff': cpu_diff, 'time_limit': time_limit}
+        return action, settings
         clock.tick(FPS)
 
-    # If loop exits normally, return 'QUIT' for caller to decide
-    return 'QUIT'
+    # If loop exits normally, return 'QUIT' plus settings
+    settings = {'handicap': handicap, 'mode': game_mode, 'cpu_diff': cpu_diff, 'time_limit': time_limit}
+    return 'QUIT', settings
 
 
 def _handle_cpu_turn(screen, state, piece_images):
@@ -1218,17 +1235,26 @@ def _handle_game_over(screen, state, piece_images):
         show_greeting(screen, "ありがとうございました", "fade-in")
         action = game_over_screen(screen, state)
         if action == 'REMATCH':
-            return True
+            state.end_processed = True
+            return 'REMATCH'
         elif action == 'QUIT':
-            return False
+            state.end_processed = True
+            return 'QUIT'
         state.end_processed = True
     
 
 if __name__=="__main__":
     # Run games until user chooses to quit
+    # Run games until user chooses to quit
+    prev_settings = None
     while True:
-        action = main()
-        if action == 'REMATCH':
+        result = main(initial_settings=prev_settings, skip_start=bool(prev_settings))
+        if isinstance(result, tuple):
+            action, prev_settings = result
+        else:
+            action, prev_settings = result, None
+        if action == 'REMATCH' and prev_settings:
+            # start a fresh game with same settings
             continue
         else:
             break
