@@ -5,7 +5,7 @@ import time
 import random
 import csv
 import os
-    
+
 # --- パス設定 ---
 # スクリプト自身の場所を基準にする
 try:
@@ -13,7 +13,7 @@ try:
     base_path = sys._MEIPASS
 except AttributeError:
     base_path = os.path.dirname(os.path.abspath(__file__))
-    
+
 # 画像と音声フォルダへのパスを作成
 assets_path = os.path.join(base_path, "assets")
 # assets内のimagesおよびsoundを参照する
@@ -22,22 +22,22 @@ sound_path = os.path.join(assets_path, "sound")
 # 棋譜ファイルはスクリプト（またはパッケージ展開先）の直下に置く
 # PyInstallerなどで配布された場合でも base_path を基準とする
 kifu_path = os.path.join(base_path, "shogi_kifu.csv")
-    
-    
+
+
 pygame.init()
 pygame.mixer.init()
-    
+
 BOARD_SIZE = 9
 SQUARE = 64
 BOARD_PIXEL_WIDTH = SQUARE * BOARD_SIZE
 BOARD_PIXEL_HEIGHT = SQUARE * BOARD_SIZE
-    
+
 COORD_MARGIN = 30
-    
+
 WINDOW_PADDING_X = 50
 WINDOW_PADDING_Y = 50
 HAND_AREA_HEIGHT = 80
-    
+
 KIFU_WINDOW_WIDTH = 300
 INFO_PANEL_HEIGHT = 100
 KIFU_ITEM_HEIGHT = 20
@@ -46,13 +46,13 @@ SAVE_BUTTON_HEIGHT = 40
 MATTA_BUTTON_HEIGHT = 40
 TIMER_BUTTON_HEIGHT = 40
 KIFU_LIST_PADDING = 10
-    
+
 WIDTH = BOARD_PIXEL_WIDTH + WINDOW_PADDING_X * 2 + KIFU_WINDOW_WIDTH + WINDOW_PADDING_X + COORD_MARGIN * 2
 HEIGHT = WINDOW_PADDING_Y + HAND_AREA_HEIGHT + BOARD_PIXEL_HEIGHT + HAND_AREA_HEIGHT + WINDOW_PADDING_Y + COORD_MARGIN * 2
-        
+
 BOARD_START_X = WINDOW_PADDING_X + COORD_MARGIN
 BOARD_START_Y = WINDOW_PADDING_Y + HAND_AREA_HEIGHT + COORD_MARGIN
-        
+
 PIECE_SIZE = 60
 PIECE_OFFSET = (SQUARE - PIECE_SIZE) // 2
 FPS = 60
@@ -77,7 +77,7 @@ except Exception:
     CHECK_FONT = pygame.font.SysFont("MS Mincho", 100, bold=True)
     GREETING_FONT = pygame.font.SysFont("MS Mincho", 70, bold=True)
     RESULT_FONT = pygame.font.SysFont("MS Mincho", 90, bold=True)
-    
+
 # 色の定義
 WHITE = (223, 235, 234)
 BLACK = (20, 20, 20)
@@ -93,9 +93,9 @@ TATAMI_GREEN = (140, 164, 138)
 DARK_BROWN = (50, 44, 40)
 BOARD_COLOR = (187, 155, 82)
 TITLE_COLOR = (230, 190, 130)
-    
+
 PROMOTION_ZONE = {0: range(0, 3), 1: range(6, 9)}
-        
+
 # サウンドファイルの読み込み (パス指定を修正)
 sound_start, sound_end, sound_itte, sound_se1, sound_think = [None] * 5
 try:
@@ -106,7 +106,7 @@ try:
     sound_think = pygame.mixer.Sound(os.path.join(sound_path, "think.mp3"))
 except pygame.error as e:
     print(f"サウンドファイルの読み込みに失敗しました: {e}")
-        
+
 # 画像の読み込み (パス指定を修正)
 fusuma_left_img, fusuma_right_img, start_bg_img = [None] * 3
 try:
@@ -115,7 +115,7 @@ try:
     start_bg_img = pygame.image.load(os.path.join(image_path, "board.png"))
 except pygame.error as e:
     print(f"画像ファイルの読み込みに失敗しました: {e}")
-    
+
 class Piece:
     """軽量な駒表現 (__slots__ でオブジェクト生成・GC負荷を削減)。"""
     __slots__ = ("kind", "owner")
@@ -148,7 +148,7 @@ class AnimatedPiece:
         self.y += self.vy
         self.angle += self.angular_velocity
         return self.y <= HEIGHT + PIECE_SIZE
-        
+
 STEP_MOVES = {
     'K': [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)],
     'G': [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (0, 1)],
@@ -272,7 +272,7 @@ def _generate_promoted_moves(board, x, y, p):
     elif base_kind == 'B':
         _add_slider_moves(board, x, y, p.owner, [(-1, -1), (-1, 1), (1, -1), (1, 1)], moves)
     return moves
-        
+
 def standard_setup():
     board = [[None for _ in range(BOARD_SIZE)] for __ in range(BOARD_SIZE)]
     back = ['L', 'N', 'S', 'G', 'K', 'G', 'S', 'N', 'L']
@@ -287,7 +287,7 @@ def standard_setup():
     for x, k in enumerate(back):
         board[x][8] = Piece(k, 0)
     return board
-        
+
 HANDICAPS = {
     '通常': [],
     '角落ち': [('B', (1, 1))],
@@ -297,7 +297,7 @@ HANDICAPS = {
     '六枚落ち': [('R', (7, 1)), ('B', (1, 1)), ('L', (0, 0)), ('L', (8, 0)), ('N', (1, 0)), ('N', (7, 0))],
 }
 CPU_DIFFICULTIES = {'入門': 'beginner', '初級': 'easy', '中級': 'medium', '上級': 'hard', '達人': 'master'}
-            
+
 class GameState:
     def __init__(self, handicap='通常', mode='2P', cpu_difficulty='easy', time_limit=None):
         self.board = standard_setup()
@@ -615,7 +615,7 @@ def draw_kifu_buttons(screen, state, kifu_area_x):
     pygame.draw.rect(screen, BUTTON_BLUE, state.save_button_rect, 0, 10)
     save_surf = LARGE_FONT.render("棋譜を保存", True, WHITE)
     screen.blit(save_surf, save_surf.get_rect(center=state.save_button_rect.center))
-    
+
     matta_button_y = save_button_y - MATTA_BUTTON_HEIGHT - 10
     state.matta_button_rect = pygame.Rect(button_x, matta_button_y, 260, MATTA_BUTTON_HEIGHT)
     color = ORANGE if len(state.history) > 0 else LIGHT_GRAY
@@ -667,7 +667,7 @@ def show_greeting(screen, text, animation_type):
     font_to_use = CHECK_FONT if text == "詰み" else GREETING_FONT
     text_surf = font_to_use.render(text, True, TITLE_COLOR)
     shadow_surf = font_to_use.render(text, True, DARK_BROWN)
-    
+
     duration = 1500
 
     if animation_type == 'split-in':
@@ -710,29 +710,31 @@ def start_screen(screen):
     if start_bg_img:
         scaled=pygame.transform.scale(start_bg_img,(WIDTH,HEIGHT)); scaled.set_alpha(80); bg.blit(scaled,(0,0))
     else: bg.fill(TATAMI_GREEN)
-    
+
     scaled_fusuma_l, scaled_fusuma_r = None, None
     if fusuma_left_img and fusuma_right_img:
         scaled_fusuma_l = pygame.transform.scale(fusuma_left_img, (WIDTH // 2 + 5, HEIGHT))
         scaled_fusuma_r = pygame.transform.scale(fusuma_right_img, (WIDTH // 2 + 5, HEIGHT))
-    
+
     fusuma_x_l, fusuma_x_r = 0, WIDTH // 2
     animation_started = False; action_to_return = None
-    
+
     while True:
         mouse_pos = pygame.mouse.get_pos()
         for event in pygame.event.get():
-            if event.type==pygame.QUIT: pygame.quit(); sys.exit()
+            if event.type==pygame.QUIT:
+                pygame.quit(); sys.exit()
             if event.type==pygame.MOUSEBUTTONDOWN and not animation_started:
                 for btn in buttons:
                     if btn['rect'].collidepoint(mouse_pos):
                         if sound_se1: sound_se1.play()
-                        if btn['action']=='QUIT': pygame.quit(); sys.exit()
+                        if btn['action']=='QUIT':
+                            pygame.quit(); sys.exit()
                         animation_started = True
                         action_to_return = btn['action']
-        
+
         screen.blit(bg, (0,0))
-        
+
         if scaled_fusuma_l and scaled_fusuma_r:
             screen.blit(scaled_fusuma_l, (fusuma_x_l, 0))
             screen.blit(scaled_fusuma_r, (fusuma_x_r, 0))
@@ -1208,7 +1210,7 @@ def get_cpu_move_medium(state):  # 新探索版 (再定義)
 
 def apply_move(state, move, is_cpu=False, screen=None, force_promotion=None, update_history=True):
     if update_history: state.save_history()
-    
+
     if not state.timer_paused:
         elapsed = time.time() - state.last_move_time
         if state.time_limit is not None:
@@ -1250,7 +1252,7 @@ def apply_move(state, move, is_cpu=False, screen=None, force_promotion=None, upd
     state.turn = 1 - state.turn
     state.cpu_thinking = False
     state.last_move_time = time.time()
-    
+
     if is_in_check(state.board, state.turn):
         state.check_display_time = time.time()
 
@@ -1335,7 +1337,7 @@ def game_over_screen(screen, state):
                                 saved_message_time = time.time()
                         else:
                             return btn['action']
-        
+
         screen.fill(TATAMI_GREEN)
         msg = f"{JAPANESE_TURN_NAME[state.winner]}の勝利"
         text_surf = RESULT_FONT.render(msg, True, TITLE_COLOR)
@@ -1349,7 +1351,7 @@ def game_over_screen(screen, state):
             pygame.draw.rect(screen, color, btn['rect'], 0, 10)
             btn_text = LARGE_FONT.render(btn['text'], True, WHITE)
             screen.blit(btn_text, btn_text.get_rect(center=btn['rect'].center))
-        
+
         if saved_message_time > 0 and time.time() - saved_message_time < 2:
             saved_text = LARGE_FONT.render("棋譜を保存しました！", True, BUTTON_BLUE)
             screen.blit(saved_text, saved_text.get_rect(center=(WIDTH // 2, HEIGHT - 50)))
@@ -1569,8 +1571,8 @@ def _handle_game_over(screen, state, piece_images):
         elif action == 'QUIT':
             state.end_processed = True
             return 'QUIT'
-        state.end_processed = True
-    
+    state.end_processed = True
+
 
 if __name__=="__main__":
     # Run games until user chooses to quit
