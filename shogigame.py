@@ -4,7 +4,6 @@ from copy import deepcopy
 import time
 import random
 import csv
-import math
 import os
 
 # --- パス設定 ---
@@ -18,8 +17,9 @@ except AttributeError:
 # 画像と音声フォルダへのパスを作成
 image_path = os.path.join(base_path, "images")
 sound_path = os.path.join(base_path, "sound")
-# shogi_kifu.csvはshogiフォルダ直下に置かれることを想定
-kifu_path = os.path.join(os.path.dirname(base_path), "shogi_kifu.csv")
+# shogi_kifu.csvはスクリプト（またはパッケージ展開先）の直下に置かれることを想定
+# PyInstallerなどで配布された場合でも base_path を基準とする
+kifu_path = os.path.join(base_path, "shogi_kifu.csv")
 
 
 pygame.init()
@@ -106,10 +106,16 @@ except pygame.error as e:
 class Piece:
     def __init__(self, kind, owner):
         self.kind, self.owner = kind, owner
-    def clone(self): return Piece(self.kind, self.owner)
+
+    def clone(self):
+        return Piece(self.kind, self.owner)
+
     @property
-    def promoted(self): return self.kind.endswith('+')
-    def __repr__(self): return f"{self.kind}{'S' if self.owner==0 else 'G'}"
+    def promoted(self):
+        return self.kind.endswith('+')
+
+    def __repr__(self):
+        return f"{self.kind}{'S' if self.owner==0 else 'G'}"
 
 class AnimatedPiece:
     def __init__(self, piece, x, y, owner):
@@ -117,21 +123,27 @@ class AnimatedPiece:
         self.vx, self.vy = random.uniform(-10, 10), random.uniform(-15, -5)
         self.angle, self.angular_velocity = 0, random.uniform(-10, 10)
         self.gravity = 0.5
+
     def update(self):
-        self.x += self.vx; self.vy += self.gravity; self.y += self.vy
+        self.x += self.vx
+        self.vy += self.gravity
+        self.y += self.vy
         self.angle += self.angular_velocity
         return self.y > HEIGHT + PIECE_SIZE
 
 STEP_MOVES = {
-    'K': [(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(-1,1),(0,1),(1,1)],
-    'G': [(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(0,1)],
-    'S': [(-1,-1),(0,-1),(1,-1),(-1,1),(1,1)],
-    'N': [(-1,-2),(1,-2)], 'L': [(0,-1)], 'P': [(0,-1)],
-    'P+': [(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(0,1)],
-    'L+': [(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(0,1)],
-    'N+': [(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(0,1)],
-    'S+': [(-1,-1),(0,-1),(1,-1),(-1,0),(1,0),(0,1)],
-    'B+': [(-1,0),(1,0),(0,-1),(0,1)], 'R+': [(-1,-1),(1,-1),(-1,1),(1,1)],
+    'K': [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)],
+    'G': [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (0, 1)],
+    'S': [(-1, -1), (0, -1), (1, -1), (-1, 1), (1, 1)],
+    'N': [(-1, -2), (1, -2)],
+    'L': [(0, -1)],
+    'P': [(0, -1)],
+    'P+': [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (0, 1)],
+    'L+': [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (0, 1)],
+    'N+': [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (0, 1)],
+    'S+': [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (0, 1)],
+    'B+': [(-1, 0), (1, 0), (0, -1), (0, 1)],
+    'R+': [(-1, -1), (1, -1), (-1, 1), (1, 1)],
 }
 SLIDERS = {'R','B','L'}
 DEMOTE_MAP = {'P+':'P','L+':'L','N+':'N','S+':'S','B+':'B','R+':'R'}
@@ -159,42 +171,59 @@ def demote_kind(kind): return DEMOTE_MAP.get(kind, kind)
 
 def standard_setup():
     board = [[None for _ in range(BOARD_SIZE)] for __ in range(BOARD_SIZE)]
-    back = ['L','N','S','G','K','G','S','N','L']
-    for x,k in enumerate(back): board[x][0] = Piece(k,1)
-    board[1][1], board[7][1] = Piece('R',1), Piece('B',1)
-    for x in range(BOARD_SIZE): board[x][2] = Piece('P',1)
-    for x in range(BOARD_SIZE): board[x][6] = Piece('P',0)
-    board[1][7], board[7][7] = Piece('B',0), Piece('R',0)
-    for x,k in enumerate(back): board[x][8] = Piece(k,0)
+    back = ['L', 'N', 'S', 'G', 'K', 'G', 'S', 'N', 'L']
+    for x, k in enumerate(back):
+        board[x][0] = Piece(k, 1)
+    board[1][1], board[7][1] = Piece('R', 1), Piece('B', 1)
+    for x in range(BOARD_SIZE):
+        board[x][2] = Piece('P', 1)
+    for x in range(BOARD_SIZE):
+        board[x][6] = Piece('P', 0)
+    board[1][7], board[7][7] = Piece('B', 0), Piece('R', 0)
+    for x, k in enumerate(back):
+        board[x][8] = Piece(k, 0)
     return board
 
-HANDICAPS = {'通常':[],'角落ち':[('B',(1,1))],'飛車落ち':[('R',(7,1))],
-             '二枚落ち':[('R',(7,1)),('B',(1,1))],'四枚落ち':[('R',(7,1)),('B',(1,1)),('L',(0,0)),('L',(8,0))],
-             '六枚落ち':[('R',(7,1)),('B',(1,1)),('L',(0,0)),('L',(8,0)),('N',(1,0)),('N',(7,0))]}
-CPU_DIFFICULTIES = {'入門':'beginner','初級':'easy','中級':'medium','上級':'hard','達人':'master'}
+HANDICAPS = {
+    '通常': [],
+    '角落ち': [('B', (1, 1))],
+    '飛車落ち': [('R', (7, 1))],
+    '二枚落ち': [('R', (7, 1)), ('B', (1, 1))],
+    '四枚落ち': [('R', (7, 1)), ('B', (1, 1)), ('L', (0, 0)), ('L', (8, 0))],
+    '六枚落ち': [('R', (7, 1)), ('B', (1, 1)), ('L', (0, 0)), ('L', (8, 0)), ('N', (1, 0)), ('N', (7, 0))],
+}
+CPU_DIFFICULTIES = {'入門': 'beginner', '初級': 'easy', '中級': 'medium', '上級': 'hard', '達人': 'master'}
 
 class GameState:
     def __init__(self, handicap='通常', mode='2P', cpu_difficulty='easy', time_limit=None):
         self.board = standard_setup()
-        for kind,pos in HANDICAPS.get(handicap,[]): self.board[pos[0]][pos[1]]=None
-        self.hands={0:[],1:[]}
-        self.turn=0
-        self.selected=None; self.legal_moves=[]; self.selected_hand=None
+        for _, pos in HANDICAPS.get(handicap, []):
+            self.board[pos[0]][pos[1]] = None
+
+        self.hands = {0: [], 1: []}
+        self.turn = 0
+        self.selected = None
+        self.legal_moves = []
+        self.selected_hand = None
         self.kifu = []
-        self.game_over=False; self.winner=None
+        self.game_over = False
+        self.winner = None
         self.last_move_target = None
-        
-        self.mode = mode; self.cpu_difficulty = cpu_difficulty
+
+        self.mode = mode
+        self.cpu_difficulty = cpu_difficulty
         self.time_limit = time_limit
         self.sente_time = time_limit if time_limit else 0.0
         self.gote_time = time_limit if time_limit else 0.0
         self.last_move_time = time.time()
         self.timer_paused = False
         self.in_sudden_death = {0: False, 1: False}
-        
+
         self.kifu_scroll_offset = 0
         self.saved_message_time = None
-        self.resigning_animation=False; self.animated_pieces=[]; self.animation_finished=False
+        self.resigning_animation = False
+        self.animated_pieces = []
+        self.animation_finished = False
         self.cpu_thinking = False
         self.hand_scroll_offset = {0: 0, 1: 0}
         self.hand_scrollbar_rect = {0: None, 1: None}
@@ -213,9 +242,12 @@ class GameState:
         self.history.append(history_item)
 
     def load_history(self, item):
-        self.board = item['board']; self.hands = item['hands']
-        self.turn = item['turn']; self.kifu = item['kifu']
-        self.sente_time = item['sente_time']; self.gote_time = item['gote_time']
+        self.board = item['board']
+        self.hands = item['hands']
+        self.turn = item['turn']
+        self.kifu = item['kifu']
+        self.sente_time = item['sente_time']
+        self.gote_time = item['gote_time']
         self.last_move_time = time.time()
         self.last_move_target = item['last_move_target']
         self.in_sudden_death = item['in_sudden_death']
@@ -226,19 +258,23 @@ def find_king(board, owner):
     for x in range(BOARD_SIZE):
         for y in range(BOARD_SIZE):
             p = board[x][y]
-            if p and p.kind == 'K' and p.owner == owner: return (x, y)
+            if p and p.kind == 'K' and p.owner == owner:
+                return (x, y)
     return None
 
 def is_in_check(board, owner):
     king_pos = find_king(board, owner)
-    if not king_pos: return False
-    kx, ky = king_pos; opponent = 1 - owner
+    if not king_pos:
+        return False
+    kx, ky = king_pos
+    opponent = 1 - owner
     for x in range(BOARD_SIZE):
         for y in range(BOARD_SIZE):
             p = board[x][y]
             if p and p.owner == opponent:
                 for tx, ty in generate_all_moves_no_check(board, x, y, p.owner):
-                    if (tx, ty) == (kx, ky): return True
+                    if (tx, ty) == (kx, ky):
+                        return True
     return False
 
 def generate_all_moves_no_check(board, x, y, owner, kind=None):
@@ -248,53 +284,81 @@ def generate_all_moves_no_check(board, x, y, owner, kind=None):
         for nx in range(BOARD_SIZE):
             for ny in range(BOARD_SIZE):
                 if not board[nx][ny]:
-                    if p_kind == 'P' and any(board[nx][i] and board[nx][i].kind == 'P' and board[nx][i].owner == p_owner for i in range(BOARD_SIZE)): continue
-                    if (p_kind in ['P','L'] and ((p_owner==0 and ny==0) or (p_owner==1 and ny==8))): continue
-                    if (p_kind == 'N' and ((p_owner==0 and ny<=1) or (p_owner==1 and ny>=7))): continue
+                    if p_kind == 'P' and any(
+                        board[nx][i] and board[nx][i].kind == 'P' and board[nx][i].owner == p_owner
+                        for i in range(BOARD_SIZE)
+                    ):
+                        continue
+                    if (p_kind in ['P', 'L'] and ((p_owner == 0 and ny == 0) or (p_owner == 1 and ny == 8))):
+                        continue
+                    if (p_kind == 'N' and ((p_owner == 0 and ny <= 1) or (p_owner == 1 and ny >= 7))):
+                        continue
                     if p_kind == 'P':
-                        temp_board = deepcopy(board); temp_board[nx][ny] = Piece('P', p_owner)
-                        if is_in_check(temp_board, 1-p_owner):
-                            opponent_has_legal_move = any(generate_all_moves(temp_board, opp_x, opp_y, 1-p_owner)
-                                                          for opp_x in range(BOARD_SIZE) for opp_y in range(BOARD_SIZE)
-                                                          if temp_board[opp_x][opp_y] and temp_board[opp_x][opp_y].owner == 1-p_owner)
-                            if not opponent_has_legal_move: continue
+                        temp_board = deepcopy(board)
+                        temp_board[nx][ny] = Piece('P', p_owner)
+                        if is_in_check(temp_board, 1 - p_owner):
+                            opponent_has_legal_move = any(
+                                generate_all_moves(temp_board, opp_x, opp_y, 1 - p_owner)
+                                for opp_x in range(BOARD_SIZE)
+                                for opp_y in range(BOARD_SIZE)
+                                if temp_board[opp_x][opp_y] and temp_board[opp_x][opp_y].owner == 1 - p_owner
+                            )
+                            if not opponent_has_legal_move:
+                                continue
                     moves.append((nx, ny))
         return moves
+
     p = board[x][y]
-    if not p: return []
+    if not p:
+        return []
     if p.kind in ['B+', 'R+']:
         for dx, dy in STEP_MOVES[p.kind]:
             nx, ny = x + dx, y + dy
-            if in_bounds(nx, ny) and (not board[nx][ny] or board[nx][ny].owner != p.owner): moves.append((nx, ny))
+            if in_bounds(nx, ny) and (not board[nx][ny] or board[nx][ny].owner != p.owner):
+                moves.append((nx, ny))
         base_kind = demote_kind(p.kind)
         slider_dirs = []
-        if base_kind == 'R': slider_dirs = [(0,-1),(0,1),(-1,0),(1,0)]
-        elif base_kind == 'B': slider_dirs = [(-1,-1),(-1,1),(1,-1),(1,1)]
+        if base_kind == 'R':
+            slider_dirs = [(0, -1), (0, 1), (-1, 0), (1, 0)]
+        elif base_kind == 'B':
+            slider_dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
         for dx, dy in slider_dirs:
             nx, ny = x + dx, y + dy
             while in_bounds(nx, ny):
-                if not board[nx][ny]: moves.append((nx, ny))
-                elif board[nx][ny].owner != p.owner: moves.append((nx,ny)); break
-                else: break
+                if not board[nx][ny]:
+                    moves.append((nx, ny))
+                elif board[nx][ny].owner != p.owner:
+                    moves.append((nx, ny))
+                    break
+                else:
+                    break
                 nx, ny = nx + dx, ny + dy
     elif p.kind in STEP_MOVES:
-        for dx,dy in STEP_MOVES[p.kind]:
-            actual_dy = dy * (1 if p.owner==0 else -1)
-            nx,ny = x+dx, y+actual_dy
-            if in_bounds(nx,ny) and (not board[nx][ny] or board[nx][ny].owner != p.owner): moves.append((nx,ny))
+        for dx, dy in STEP_MOVES[p.kind]:
+            actual_dy = dy * (1 if p.owner == 0 else -1)
+            nx, ny = x + dx, y + actual_dy
+            if in_bounds(nx, ny) and (not board[nx][ny] or board[nx][ny].owner != p.owner):
+                moves.append((nx, ny))
     if p.kind in SLIDERS:
         dirs = []
-        if p.kind == 'R': dirs = [(0,-1),(0,1),(-1,0),(1,0)]
-        elif p.kind == 'B': dirs = [(-1,-1),(-1,1),(1,-1),(1,1)]
-        elif p.kind == 'L': dirs = [(0,-1)]
-        for dx,dy in dirs:
-            actual_dy = dy * (1 if p.owner==0 else -1)
-            nx,ny = x+dx, y+actual_dy
-            while in_bounds(nx,ny):
-                if not board[nx][ny]: moves.append((nx,ny))
-                elif board[nx][ny].owner != p.owner: moves.append((nx,ny)); break
-                else: break
-                nx,ny = nx+dx, ny+actual_dy
+        if p.kind == 'R':
+            dirs = [(0, -1), (0, 1), (-1, 0), (1, 0)]
+        elif p.kind == 'B':
+            dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        elif p.kind == 'L':
+            dirs = [(0, -1)]
+        for dx, dy in dirs:
+            actual_dy = dy * (1 if p.owner == 0 else -1)
+            nx, ny = x + dx, y + actual_dy
+            while in_bounds(nx, ny):
+                if not board[nx][ny]:
+                    moves.append((nx, ny))
+                elif board[nx][ny].owner != p.owner:
+                    moves.append((nx, ny))
+                    break
+                else:
+                    break
+                nx, ny = nx + dx, ny + actual_dy
     return moves
 
 def generate_all_moves(board, x, y, owner, kind=None, check_rule=True):
@@ -467,7 +531,8 @@ def draw_kifu(screen, state):
         bar_y = kifu_list_y + (kifu_list_height-bar_h)*ratio
         state.scrollbar_rect = pygame.Rect(kifu_area_x+KIFU_WINDOW_WIDTH-15, bar_y, 10, bar_h)
         pygame.draw.rect(screen, LIGHT_GRAY, state.scrollbar_rect)
-    else: state.scrollbar_rect = None
+    else:
+        state.scrollbar_rect = None
 
     resign_button_y = HEIGHT-WINDOW_PADDING_Y-RESIGN_BUTTON_HEIGHT-10
     button_x = kifu_area_x+(KIFU_WINDOW_WIDTH-260)/2
@@ -515,7 +580,7 @@ def ask_rematch(screen, message="再対局しますか？"):
     yes_rect_text, no_rect_text = ("はい", "いいえ") if message == "再対局しますか？" else ("続ける", "終了")
     yes_rect, no_rect = pygame.Rect(50,120,120,50), pygame.Rect(230,120,120,50)
     pygame.draw.rect(dialog, GREEN, yes_rect); pygame.draw.rect(dialog, RED, no_rect)
-    dialog.blit(LARGE_FONT.render(yes_rect_text,True,BLACK),LARGE_FONT.render(yes_rect_text,True,BLACK).get_rect(center=yes_rect.center)); 
+    dialog.blit(LARGE_FONT.render(yes_rect_text,True,BLACK),LARGE_FONT.render(yes_rect_text,True,BLACK).get_rect(center=yes_rect.center))
     dialog.blit(LARGE_FONT.render(no_rect_text,True,BLACK),LARGE_FONT.render(no_rect_text,True,BLACK).get_rect(center=no_rect.center))
     screen.blit(dialog, dialog_rect.topleft); pygame.display.flip()
     while True:
@@ -531,8 +596,7 @@ def show_greeting(screen, text, animation_type):
     text_surf = font_to_use.render(text, True, TITLE_COLOR)
     shadow_surf = font_to_use.render(text, True, DARK_BROWN)
     
-    duration = 1500; fade_duration = 500
-    start_time = pygame.time.get_ticks()
+    duration = 1500
 
     if animation_type == 'split-in':
         end_y, start_y = HEIGHT // 2, -text_surf.get_height()
@@ -716,11 +780,11 @@ def alpha_beta_search(state, depth, alpha, beta, maximizing_player, owner):
         for move in legal_moves:
             temp_state = deepcopy(state)
             apply_move(temp_state, move, is_cpu=True, update_history=False)
-            eval, _ = alpha_beta_search(temp_state, depth-1, alpha, beta, False, owner)
-            if eval > max_eval:
-                max_eval = eval
+            val, _ = alpha_beta_search(temp_state, depth-1, alpha, beta, False, owner)
+            if val > max_eval:
+                max_eval = val
                 best_move = move
-            alpha = max(alpha, eval)
+            alpha = max(alpha, val)
             if beta <= alpha: break
         return max_eval, best_move
     else:
@@ -728,11 +792,11 @@ def alpha_beta_search(state, depth, alpha, beta, maximizing_player, owner):
         for move in legal_moves:
             temp_state = deepcopy(state)
             apply_move(temp_state, move, is_cpu=True, update_history=False)
-            eval, _ = alpha_beta_search(temp_state, depth-1, alpha, beta, True, owner)
-            if eval < min_eval:
-                min_eval = eval
+            val, _ = alpha_beta_search(temp_state, depth-1, alpha, beta, True, owner)
+            if val < min_eval:
+                min_eval = val
                 best_move = move
-            beta = min(beta, eval)
+            beta = min(beta, val)
             if beta <= alpha: break
         return min_eval, best_move
 
